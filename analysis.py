@@ -81,38 +81,32 @@ def main():
             print(f"Error processing {case_id}: {e}")
     
     df = pd.DataFrame(results)
-    # Map categories: Conscious=1, Unconscious=0
     df['label'] = df['state'].map({'Conscious': 1, 'Unconscious': 0})
 
     X = df[['K', 'LZ']].values  
     y = df['label'].values
 
-    # 2. Create the "Elliptical" Model Pipeline
-    # Degree 2 = Allows parabolas and ellipses (Quadratic)
     model = make_pipeline(
-        StandardScaler(),            # Step 1: Normalize data (Helps curve fitting)
-        PolynomialFeatures(degree=2), # Step 2: Create squares (The "Curve" magic)
-        LogisticRegression(C=1.0)     # Step 3: Classify
+        StandardScaler(),           
+        PolynomialFeatures(degree=2), 
+        LogisticRegression(C=1.0)   
     )
 
     model.fit(X, y)
 
-    # 3. Plotting
     plt.figure(figsize=(10, 6))
 
-    # A. Draw the Curved Decision Boundary
-    # This will color the background based on the curve
+
     DecisionBoundaryDisplay.from_estimator(
         model, X, 
         plot_method="pcolormesh",
         shading="auto",
         alpha=0.2, 
-        cmap="coolwarm", # Blue=Conscious zone, Red=Unconscious zone
+        cmap="coolwarm",
         ax=plt.gca(),
         response_method="predict"
     )
 
-    # B. Plot the actual data points
     conscious = df[df['label']==1]
     unconscious = df[df['label']==0]
 
