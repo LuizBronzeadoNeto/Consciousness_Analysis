@@ -28,7 +28,7 @@ def lz_fast(binary):
                     break
                 i = 0
                 k = 1
-    return c / n
+    return c * numpy.log2(n) / n
 
 def lempel_ziv_complexity(signal):
     median = numpy.median(signal)
@@ -38,18 +38,21 @@ def lempel_ziv_complexity(signal):
 def gottwald_melbourne_chaos(signal, c=None):
     n = len(signal)
     if c is None:
-        c = numpy.random.uniform(0, numpy.pi)
+        c = numpy.random.uniform(numpy.pi/5, 4*numpy.pi/5)
     j = numpy.arange(n)
     pc = numpy.cumsum(signal * numpy.cos(j*c))
     qc = numpy.cumsum(signal * numpy.sin(j*c))
 
     M = pc**2 + qc**2
-    K = numpy.corrcoef(j, M)[0, 1]
+    E_x = numpy.mean(signal)
+    V_osc = E_x**2 * (1 - numpy.cos(j * c)) / (1 - numpy.cos(c))
+    D = M - V_osc
+    K = numpy.corrcoef(j, D)[0, 1]
 
     return K
 
-def median_K(signal, n_trials=50):
-    Ks = []
-    for _ in range(n_trials):
-        Ks.append(gottwald_melbourne_chaos(signal))
+def median_K(signal, n_trials=50, seed=42):
+    rng = numpy.random.RandomState(seed)
+    cs = rng.uniform(numpy.pi/5, 4*numpy.pi/5, size=n_trials)
+    Ks = [gottwald_melbourne_chaos(signal, c=c) for c in cs]
     return numpy.median(Ks)

@@ -7,8 +7,11 @@ from sklearn.inspection import DecisionBoundaryDisplay
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 from sklearn.pipeline import make_pipeline
-from sklearn.inspection import DecisionBoundaryDisplay
+from sklearn.model_selection import cross_val_score, StratifiedKFold
 import complexity_calculations as eeg
+
+
+OUTLIER_THRESHOLD = 35
 
 
 def main():
@@ -59,14 +62,14 @@ def main():
                 state_mask = (labels == state_val) & quality_mask
                 alpha_state = alpha[state_mask]
                 
-                if len(alpha_state) < 15: 
+                if len(alpha_state) < 15:
                     continue
 
                 if numpy.std(alpha_state) == 0:
                     continue
 
                 LZ = eeg.lempel_ziv_complexity(alpha_state)
-                
+
                 alpha_norm = (alpha_state - numpy.mean(alpha_state)) / numpy.std(alpha_state)
                 K = eeg.median_K(alpha_norm)
 
@@ -74,7 +77,8 @@ def main():
                     "case": case_id,
                     "state": state_name,
                     "K": K,
-                    "LZ": LZ
+                    "LZ": LZ,
+                    "n_samples": len(alpha_state)
                 })
 
         except Exception as e:
@@ -89,8 +93,11 @@ def main():
     model = make_pipeline(
         StandardScaler(),           
         PolynomialFeatures(degree=2), 
-        LogisticRegression(C=1.0)   
+        LogisticRegression(C=1.0, class_weight='balanced')
     )
+
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    cv_scores = cross_val_score(model, X, y, cv=cv)
 
     model.fit(X, y)
 
@@ -110,14 +117,34 @@ def main():
     conscious = df[df['label']==1]
     unconscious = df[df['label']==0]
 
-    plt.scatter(conscious['K'], conscious['LZ'], 
-                color='red', label='Conscious', edgecolor='k', s=50)
-    plt.scatter(unconscious['K'], unconscious['LZ'], 
-                color='blue', label='Unconscious', marker='x', s=50)
+    ax = plt.gca()
+
+    is_outlier = (df['n_samples'] <= OUTLIER_THRESHOLD)
+
+    c_ok = conscious[~is_outlier[conscious.index]]
+    c_short = conscious[is_outlier[conscious.index]]
+    u_ok = unconscious[~is_outlier[unconscious.index]]
+    u_short = unconscious[is_outlier[unconscious.index]]
+
+    ax.scatter(c_ok['K'], c_ok['LZ'],
+               color='red', label='Conscious', edgecolor='k', s=50)
+    ax.scatter(u_ok['K'], u_ok['LZ'],
+               color='blue', label='Unconscious', marker='x', s=50)
+
+    if len(c_short) > 0:
+        ax.plot(c_short['K'].values, c_short['LZ'].values, 'o',
+                color='red', markerfacecoloralt='yellow', fillstyle='left',
+                markersize=7, markeredgecolor='k',
+                label=f'Conscious (n\u2264{OUTLIER_THRESHOLD})', linestyle='None')
+    if len(u_short) > 0:
+        ax.plot(u_short['K'].values, u_short['LZ'].values, 's',
+                color='blue', markerfacecoloralt='yellow', fillstyle='left',
+                markersize=7, markeredgecolor='k',
+                label=f'Unconscious (n\u2264{OUTLIER_THRESHOLD})', linestyle='None')
 
     plt.xlabel("Median K (Chaos)")
     plt.ylabel("Lempel-Ziv Complexity")
-    plt.title(f"Quadratic Classification (Elliptical Boundary)\nAccuracy: {model.score(X, y):.2%}")
+    plt.title(f"Quadratic Classification (Elliptical Boundary)\n5-Fold CV Accuracy: {cv_scores.mean():.2%} (+/- {cv_scores.std():.2%})")
     plt.legend()
     plt.show()
 
