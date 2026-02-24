@@ -108,7 +108,7 @@ def main():
         model, X, 
         plot_method="pcolormesh",
         shading="auto",
-        alpha=0.2, 
+        alpha=0.85, 
         cmap="coolwarm",
         ax=plt.gca(),
         response_method="predict"
