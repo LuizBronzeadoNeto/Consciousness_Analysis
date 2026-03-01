@@ -5,6 +5,7 @@ import os
 import matplotlib.pyplot as plt
 from sklearn.inspection import DecisionBoundaryDisplay
 from sklearn.linear_model import LogisticRegression
+from sklearn.svm import SVC
 from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 from sklearn.pipeline import make_pipeline
 from sklearn.model_selection import cross_val_score, StratifiedKFold
@@ -14,7 +15,7 @@ import complexity_calculations as eeg
 OUTLIER_THRESHOLD = 35
 
 
-def main():
+def load_data():
     files = glob.glob("dataset/**/*_Sdb.csv", recursive=True)
 
     results = []
@@ -24,13 +25,13 @@ def main():
         fname = os.path.basename(filepath)
         case_id = fname.split("_")[0]
         cohort = os.path.basename(os.path.dirname(filepath))
-        
+
         base_path = os.path.dirname(filepath)
-        
+
         try:
             sdb = pd.read_csv(filepath, header=None).values
             f = pd.read_csv(os.path.join(base_path, f"{case_id}_f.csv"), header=None).values.flatten()
-            
+
             l_path = os.path.join(base_path, f"{case_id}_l.csv")
             if not os.path.exists(l_path):
                 continue
@@ -43,7 +44,7 @@ def main():
                 alpha = P[:, (f >= 8) & (f <= 12)].mean(axis=1)
 
             min_len = min(len(alpha), len(labels))
-            
+
             quality_mask = numpy.ones(min_len, dtype=bool)
             if cohort == "OR":
                 q_path = os.path.join(base_path, f"{case_id}_EEGquality.csv")
@@ -57,11 +58,11 @@ def main():
             quality_mask = quality_mask[:min_len]
 
             states = {0: "Unconscious", 1: "Conscious"}
-            
+
             for state_val, state_name in states.items():
                 state_mask = (labels == state_val) & quality_mask
                 alpha_state = alpha[state_mask]
-                
+
                 if len(alpha_state) < 15:
                     continue
 
@@ -83,41 +84,19 @@ def main():
 
         except Exception as e:
             print(f"Error processing {case_id}: {e}")
-    
+
     df = pd.DataFrame(results)
     df['label'] = df['state'].map({'Conscious': 1, 'Unconscious': 0})
 
-    X = df[['K', 'LZ']].values  
+    X = df[['K', 'LZ']].values
     y = df['label'].values
 
-    model = make_pipeline(
-        StandardScaler(),           
-        PolynomialFeatures(degree=2), 
-        LogisticRegression(C=1.0, class_weight='balanced')
-    )
-
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-    cv_scores = cross_val_score(model, X, y, cv=cv)
-
-    model.fit(X, y)
-
-    plt.figure(figsize=(10, 6))
+    return X, y, df
 
 
-    DecisionBoundaryDisplay.from_estimator(
-        model, X, 
-        plot_method="pcolormesh",
-        shading="auto",
-        alpha=0.2, 
-        cmap="coolwarm",
-        ax=plt.gca(),
-        response_method="predict"
-    )
-
-    conscious = df[df['label']==1]
-    unconscious = df[df['label']==0]
-
-    ax = plt.gca()
+def plot_scatter(ax, df):
+    conscious = df[df['label'] == 1]
+    unconscious = df[df['label'] == 0]
 
     is_outlier = (df['n_samples'] <= OUTLIER_THRESHOLD)
 
@@ -142,10 +121,48 @@ def main():
                 markersize=7, markeredgecolor='k',
                 label=f'Unconscious (n\u2264{OUTLIER_THRESHOLD})', linestyle='None')
 
-    plt.xlabel("Median K (Chaos)")
-    plt.ylabel("Lempel-Ziv Complexity")
-    plt.title(f"Quadratic Classification (Elliptical Boundary)\n5-Fold CV Accuracy: {cv_scores.mean():.2%} (+/- {cv_scores.std():.2%})")
-    plt.legend()
+
+def main():
+    X, y, df = load_data()
+
+    models = {
+        "Logistic Regression (Quadratic)": make_pipeline(
+            StandardScaler(),
+            PolynomialFeatures(degree=2),
+            LogisticRegression(C=1.0, class_weight='balanced')
+        ),
+        "SVM (RBF Kernel)": make_pipeline(
+            StandardScaler(),
+            SVC(kernel='rbf', class_weight='balanced')
+        ),
+    }
+
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+    fig, axes = plt.subplots(1, 2, figsize=(18, 6))
+
+    for ax, (name, model) in zip(axes, models.items()):
+        cv_scores = cross_val_score(model, X, y, cv=cv)
+        model.fit(X, y)
+
+        DecisionBoundaryDisplay.from_estimator(
+            model, X,
+            plot_method="pcolormesh",
+            shading="auto",
+            alpha=0.2,
+            cmap="coolwarm",
+            ax=ax,
+            response_method="predict"
+        )
+
+        plot_scatter(ax, df)
+
+        ax.set_xlabel("Median K (Chaos)")
+        ax.set_ylabel("Lempel-Ziv Complexity")
+        ax.set_title(f"{name}\n5-Fold CV Accuracy: {cv_scores.mean():.2%} (+/- {cv_scores.std():.2%})")
+        ax.legend()
+
+    plt.tight_layout()
     plt.show()
 
 if __name__ == "__main__":
