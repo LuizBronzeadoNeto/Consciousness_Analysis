@@ -10,6 +10,9 @@ from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 from sklearn.pipeline import make_pipeline
 from sklearn.model_selection import cross_val_score, StratifiedKFold
 import complexity_calculations as eeg
+from sklearn.model_selection import GridSearchCV
+from sklearn.preprocessing import RobustScaler
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 
 
 OUTLIER_THRESHOLD = 35
@@ -121,9 +124,39 @@ def plot_scatter(ax, df):
                 markersize=7, markeredgecolor='k',
                 label=f'Unconscious (n\u2264{OUTLIER_THRESHOLD})', linestyle='None')
 
+def tuning_svm(X, y, cv):
+
+    param_grid = {
+        'svc__C': [0.1, 1, 10, 100],
+        'svc__gamma': [1, 0.1, 0.01, 0.001, 'scale'],
+        'svc__kernel': ['rbf'] 
+    }
+
+    pipeline_svm = make_pipeline(
+        RobustScaler(), 
+        SVC(kernel='rbf', class_weight='balanced', probability=True)
+    )
+
+    grid_search = GridSearchCV(
+        pipeline_svm, 
+        param_grid, 
+        cv=cv, 
+        scoring='accuracy', 
+        n_jobs=-1
+    ).fit(X, y)
+
+    print(f"[SVM] Melhores parâmetros: {grid_search.best_params_}")
+
+    return grid_search.best_estimator_
 
 def main():
     X, y, df = load_data()
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+    print(f"Total de amostras (linhas): {len(df)}")
+    print(f"Total de colunas (features): {X.shape[1]}")
+
+    svm_tuned = tuning_svm(X, y, cv)
 
     models = {
         "Logistic Regression (Quadratic)": make_pipeline(
@@ -135,11 +168,10 @@ def main():
             StandardScaler(),
             SVC(kernel='rbf', class_weight='balanced')
         ),
+        "SVM (Grid Search/Optimized)": svm_tuned,
     }
 
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-
-    fig, axes = plt.subplots(1, 2, figsize=(18, 6))
+    fig, axes = plt.subplots(1, 3, figsize=(22, 6))
 
     for ax, (name, model) in zip(axes, models.items()):
         cv_scores = cross_val_score(model, X, y, cv=cv)
