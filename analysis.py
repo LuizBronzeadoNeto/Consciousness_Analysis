@@ -90,7 +90,6 @@ def main():
     
     df = pd.DataFrame(results)
     
-    # Definição das colunas com nomes legíveis para os eixos
     col_k = 'Median K (Chaos)'
     col_lz = 'Lempel-Ziv Complexity'
     col_c = 'Proximity to Criticality Measure (C)'
@@ -106,7 +105,6 @@ def main():
     cv_scores = cross_val_score(model, X, y, cv=cv)
     model.fit(X, y)
 
-    # Configuração dos Gráficos
     fig, axes = plt.subplots(1, 3, figsize=(22, 6))
     projections = [
         (col_k, col_lz, "Median K (Chaos) x Lempel-Ziv Complexity"),
@@ -118,7 +116,6 @@ def main():
         ax = axes[i]
         X_2d = df[[feat_x, feat_y]].values
         
-        # Modelo de visualização para a fronteira de decisão 2D
         vis_model = make_pipeline(StandardScaler(), PolynomialFeatures(degree=2), LogisticRegression(class_weight='balanced'))
         vis_model.fit(X_2d, y)
 
@@ -130,19 +127,15 @@ def main():
         is_outlier = df['n_samples'] <= OUTLIER_THRESHOLD
         
         for state, color, marker in [('Conscious', 'red', 'o'), ('Unconscious', 'blue', 'x')]:
-            # Filtragem dos dados para o estado atual
             subset = df[df['state'] == state]
             ok = subset[~is_outlier[subset.index]]
             short = subset[is_outlier[subset.index]]
             
-            # Ajuste de borda para evitar avisos com o marcador 'x'
             edge = 'k' if marker != 'x' else None
             
-            # Plot dos pontos normais
             ax.scatter(ok[feat_x], ok[feat_y], color=color, label=state, 
                        edgecolor=edge, s=60, marker=marker)
             
-            # Plot das amostras curtas (Outliers)
             if not short.empty:
                 ax.plot(short[feat_x].values, short[feat_y].values, marker,
                         color=color, markerfacecoloralt='yellow', fillstyle='left',
@@ -150,7 +143,6 @@ def main():
                         linestyle='None',
                         label=f'{state} (n\u2264{OUTLIER_THRESHOLD})')
 
-        # Configurações de texto e legenda para cada eixo individualmente
         ax.set_title(title)
         ax.set_xlabel(feat_x)
         ax.set_ylabel(feat_y)
