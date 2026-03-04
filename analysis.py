@@ -105,11 +105,13 @@ def main():
     cv_scores = cross_val_score(model, X, y, cv=cv)
     model.fit(X, y)
 
-    fig, axes = plt.subplots(1, 3, figsize=(22, 6))
+    #fig, axes = plt.subplots(1, 3, figsize=(22, 6))
+    plt.figure(figsize=(10, 7))
+    axes = [plt.gca()]
     projections = [
         (col_k, col_lz, "Median K (Chaos) x Lempel-Ziv Complexity"),
-        (col_k, col_c, "Median K (Chaos) x Proximity to Criticality (C)"),
-        (col_lz, col_c, "Lempel-Ziv Complexity x Proximity to Criticality (C)")
+        #(col_k, col_c, "Median K (Chaos) x Proximity to Criticality (C)"),
+        #(col_lz, col_c, "Lempel-Ziv Complexity x Proximity to Criticality (C)")
     ]
 
     for i, (feat_x, feat_y, title) in enumerate(projections):
