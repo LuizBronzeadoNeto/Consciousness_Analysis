@@ -9,7 +9,6 @@ from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 from sklearn.pipeline import make_pipeline
 from sklearn.model_selection import cross_val_score, StratifiedKFold
 import complexity_calculations as eeg
-import seaborn as sns
 
 
 OUTLIER_THRESHOLD = 35
@@ -74,14 +73,11 @@ def main():
                 alpha_norm = (alpha_state - numpy.mean(alpha_state)) / numpy.std(alpha_state)
                 K = eeg.median_K(alpha_norm)
 
-                C = eeg.medida_proximidade_criticalidade(K, alpha=0.85)
-
                 results.append({
                     "case": case_id,
                     "state": state_name,
                     "K": K,
                     "LZ": LZ,
-                    "C": C,
                     "n_samples": len(alpha_state)
                 })
 
@@ -89,75 +85,69 @@ def main():
             print(f"Error processing {case_id}: {e}")
     
     df = pd.DataFrame(results)
-    
-    # Definição das colunas com nomes legíveis para os eixos
-    col_k = 'Median K (Chaos)'
-    col_lz = 'Lempel-Ziv Complexity'
-    col_c = 'Proximity to Criticality Measure (C)'
-    
-    df[[col_k, col_lz, col_c]] = df[['K', 'LZ', 'C']].astype(float)
     df['label'] = df['state'].map({'Conscious': 1, 'Unconscious': 0})
 
-    X = df[['K', 'LZ', 'C']].values  
+    X = df[['K', 'LZ']].values  
     y = df['label'].values
 
-    model = make_pipeline(StandardScaler(), PolynomialFeatures(degree=2), LogisticRegression(class_weight='balanced'))
+    model = make_pipeline(
+        StandardScaler(),           
+        PolynomialFeatures(degree=2), 
+        LogisticRegression(C=1.0, class_weight='balanced')
+    )
+
     cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
     cv_scores = cross_val_score(model, X, y, cv=cv)
+
     model.fit(X, y)
 
-    # Configuração dos Gráficos
-    fig, axes = plt.subplots(1, 3, figsize=(22, 6))
-    projections = [
-        (col_k, col_lz, "Median K (Chaos) x Lempel-Ziv Complexity"),
-        (col_k, col_c, "Median K (Chaos) x Proximity to Criticality (C)"),
-        (col_lz, col_c, "Lempel-Ziv Complexity x Proximity to Criticality (C)")
-    ]
+    print(f"Acurácia Média: {cv_scores.mean():.2%}")
 
-    for i, (feat_x, feat_y, title) in enumerate(projections):
-        ax = axes[i]
-        X_2d = df[[feat_x, feat_y]].values
-        
-        # Modelo de visualização para a fronteira de decisão 2D
-        vis_model = make_pipeline(StandardScaler(), PolynomialFeatures(degree=2), LogisticRegression(class_weight='balanced'))
-        vis_model.fit(X_2d, y)
+    plt.figure(figsize=(10, 6))
 
-        DecisionBoundaryDisplay.from_estimator(
-            vis_model, X_2d, plot_method="pcolormesh", shading="auto",
-            alpha=0.15, cmap="coolwarm", ax=ax, response_method="predict"
-        )
 
-        is_outlier = df['n_samples'] <= OUTLIER_THRESHOLD
-        
-        for state, color, marker in [('Conscious', 'red', 'o'), ('Unconscious', 'blue', 'x')]:
-            # Filtragem dos dados para o estado atual
-            subset = df[df['state'] == state]
-            ok = subset[~is_outlier[subset.index]]
-            short = subset[is_outlier[subset.index]]
-            
-            # Ajuste de borda para evitar avisos com o marcador 'x'
-            edge = 'k' if marker != 'x' else None
-            
-            # Plot dos pontos normais
-            ax.scatter(ok[feat_x], ok[feat_y], color=color, label=state, 
-                       edgecolor=edge, s=60, marker=marker)
-            
-            # Plot das amostras curtas (Outliers)
-            if not short.empty:
-                ax.plot(short[feat_x].values, short[feat_y].values, marker,
-                        color=color, markerfacecoloralt='yellow', fillstyle='left',
-                        markersize=8, markeredgecolor=edge if edge else color, 
-                        linestyle='None',
-                        label=f'{state} (n\u2264{OUTLIER_THRESHOLD})')
+    DecisionBoundaryDisplay.from_estimator(
+        model, X, 
+        plot_method="pcolormesh",
+        shading="auto",
+        alpha=0.2, 
+        cmap="coolwarm",
+        ax=plt.gca(),
+        response_method="predict"
+    )
 
-        # Configurações de texto e legenda para cada eixo individualmente
-        ax.set_title(title)
-        ax.set_xlabel(feat_x)
-        ax.set_ylabel(feat_y)
-        ax.legend(loc='upper left', fontsize='x-small')
+    conscious = df[df['label']==1]
+    unconscious = df[df['label']==0]
 
-    plt.suptitle(f"Quadratic Classification (Elliptical Boundary)\n5-Fold CV Accuracy: {cv_scores.mean():.2%} (+/- {cv_scores.std():.2%})", fontsize=16)
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    ax = plt.gca()
+
+    is_outlier = (df['n_samples'] <= OUTLIER_THRESHOLD)
+
+    c_ok = conscious[~is_outlier[conscious.index]]
+    c_short = conscious[is_outlier[conscious.index]]
+    u_ok = unconscious[~is_outlier[unconscious.index]]
+    u_short = unconscious[is_outlier[unconscious.index]]
+
+    ax.scatter(c_ok['K'], c_ok['LZ'],
+               color='red', label='Conscious', edgecolor='k', s=50)
+    ax.scatter(u_ok['K'], u_ok['LZ'],
+               color='blue', label='Unconscious', marker='x', s=50)
+
+    if len(c_short) > 0:
+        ax.plot(c_short['K'].values, c_short['LZ'].values, 'o',
+                color='red', markerfacecoloralt='yellow', fillstyle='left',
+                markersize=7, markeredgecolor='k',
+                label=f'Conscious (n\u2264{OUTLIER_THRESHOLD})', linestyle='None')
+    if len(u_short) > 0:
+        ax.plot(u_short['K'].values, u_short['LZ'].values, 's',
+                color='blue', markerfacecoloralt='yellow', fillstyle='left',
+                markersize=7, markeredgecolor='k',
+                label=f'Unconscious (n\u2264{OUTLIER_THRESHOLD})', linestyle='None')
+
+    plt.xlabel("Median K (Chaos)")
+    plt.ylabel("Lempel-Ziv Complexity")
+    plt.title(f"Quadratic Classification (Elliptical Boundary)\n5-Fold CV Accuracy: {cv_scores.mean():.2%} (+/- {cv_scores.std():.2%})")
+    plt.legend()
     plt.show()
 
 if __name__ == "__main__":
