@@ -13,6 +13,7 @@ import complexity_calculations as eeg
 from sklearn.model_selection import GridSearchCV
 from sklearn.preprocessing import RobustScaler
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+from scipy.signal import savgol_filter
 
 
 OUTLIER_THRESHOLD = 35
@@ -72,9 +73,11 @@ def load_data():
                 if numpy.std(alpha_state) == 0:
                     continue
 
-                LZ = eeg.lempel_ziv_complexity(alpha_state)
+                alpha_smooth = savgol_filter(alpha_state, window_length=11, polyorder=2)
 
-                alpha_norm = (alpha_state - numpy.mean(alpha_state)) / numpy.std(alpha_state)
+                LZ = eeg.lempel_ziv_complexity(alpha_smooth)
+
+                alpha_norm = (alpha_smooth - numpy.mean(alpha_smooth)) / numpy.std(alpha_smooth)
                 K = eeg.median_K(alpha_norm)
 
                 results.append({
@@ -171,28 +174,34 @@ def main():
         "SVM (Grid Search/Optimized)": svm_tuned,
     }
 
-    fig, axes = plt.subplots(1, 3, figsize=(22, 6))
+    fig, axes = plt.subplots(2, 3, figsize=(22, 12))
 
-    for ax, (name, model) in zip(axes, models.items()):
-        cv_scores = cross_val_score(model, X, y, cv=cv)
-        model.fit(X, y)
+    for i, (name, model) in enumerate(models.items()):
+            cv_scores = cross_val_score(model, X, y, cv=cv)
+            model.fit(X, y)
+            y_pred = model.predict(X)
 
-        DecisionBoundaryDisplay.from_estimator(
-            model, X,
-            plot_method="pcolormesh",
-            shading="auto",
-            alpha=0.2,
-            cmap="coolwarm",
-            ax=ax,
-            response_method="predict"
-        )
+            ax_boundary = axes[0, i]
+            DecisionBoundaryDisplay.from_estimator(
+                model, X,
+                plot_method="pcolormesh",
+                shading="auto",
+                alpha=0.2,
+                cmap="coolwarm",
+                ax=ax_boundary,
+                response_method="predict"
+            )
+            plot_scatter(ax_boundary, df)
+            ax_boundary.set_xlabel("Median K (Chaos)")
+            ax_boundary.set_ylabel("LZ Complexity")
+            ax_boundary.set_title(f"{name}\nCV Acc: {cv_scores.mean():.2%}")
+            ax_boundary.legend(fontsize='x-small')
 
-        plot_scatter(ax, df)
-
-        ax.set_xlabel("Median K (Chaos)")
-        ax.set_ylabel("Lempel-Ziv Complexity")
-        ax.set_title(f"{name}\n5-Fold CV Accuracy: {cv_scores.mean():.2%} (+/- {cv_scores.std():.2%})")
-        ax.legend()
+            ax_cm = axes[1, i]
+            cm = confusion_matrix(y, y_pred)
+            disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=['Uncon.', 'Cons.'])
+            disp.plot(ax=ax_cm, cmap='Blues', colorbar=False)
+            ax_cm.set_title(f"Confusion Matrix: {name}")
 
     plt.tight_layout()
     plt.show()
