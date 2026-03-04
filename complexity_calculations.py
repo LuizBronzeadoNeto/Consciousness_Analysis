@@ -58,8 +58,6 @@ def median_K(signal, n_trials=50, seed=42):
     return numpy.median(Ks)
 
 def medida_proximidade_criticalidade(k, alpha=0.85):
-    #alpha foi definido como 0.85 como padrão, dado que o artigo
-    #informa que, por testes, esse valor trouxe resultados mais valiosos
     k = numpy.clip(k, 0, 1)
     
     c = numpy.where(
