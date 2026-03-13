@@ -74,7 +74,7 @@ def main():
                 alpha_norm = (alpha_state - numpy.mean(alpha_state)) / numpy.std(alpha_state)
                 K = eeg.median_K(alpha_norm)
 
-                C = eeg.medida_proximidade_criticalidade(K, alpha=0.85)
+                C = eeg.criticality_proximity(K, alpha=0.85)
 
                 results.append({
                     "case": case_id,

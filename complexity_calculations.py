@@ -57,7 +57,7 @@ def median_K(signal, n_trials=50, seed=42):
     Ks = [gottwald_melbourne_chaos(signal, c=c) for c in cs]
     return numpy.median(Ks)
 
-def medida_proximidade_criticalidade(k, alpha=0.85):
+def criticality_proximity(k, alpha=0.85):
     k = numpy.clip(k, 0, 1)
     
     c = numpy.where(
