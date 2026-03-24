@@ -5,7 +5,7 @@ import complexity_calculations as eeg
 def plot_c_function(alpha=0.85):
     k_values = np.linspace(0, 1, 500)
     
-    c_values = [eeg.medida_proximidade_criticalidade(k, alpha) for k in k_values]
+    c_values = [eeg.criticality_proximity(k, alpha) for k in k_values]
 
     plt.figure(figsize=(10, 6))
     
