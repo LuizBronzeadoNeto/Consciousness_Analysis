@@ -29,7 +29,7 @@ def main():
                title="Filtered EEG - Scroll to see the Seizure",
                block=True)
     epochs = mne.make_fixed_length_epochs(raw, duration = 2.0, preload = True)
-    psd = epochs.compute_psd(method = 'multiaper', fmin = 0.5, fmax = 14.0)
+    psd = epochs.compute_psd(method = 'multitaper', fmin = 0.5, fmax = 14.0)
     psds, freqs = psd.get_data(return_freqs=True)
 
     bands = {
