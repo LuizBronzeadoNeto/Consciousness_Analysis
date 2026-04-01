@@ -13,8 +13,8 @@ import complexity_calculations as eeg
 from sklearn.model_selection import GridSearchCV
 from sklearn.preprocessing import RobustScaler
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
-
-
+from sklearn.metrics import roc_auc_score
+from sklearn.utils.validation import check_is_fitted
 OUTLIER_THRESHOLD = 35
 
 
@@ -169,7 +169,7 @@ def tuning_svm(X, y, groups):
         "svc__gamma": [1, 0.1, 0.01, 0.001, "scale"],
         "svc__kernel": ["rbf"],
     }
-
+    
     pipeline_svm = make_pipeline(
         RobustScaler(), SVC(kernel="rbf", class_weight="balanced", probability=True)
     )
@@ -206,7 +206,27 @@ def main():
         "SVM (Grid Search/Optimized)": svm_tuned,
     }
 
-    for name, model in models.items():
+    gkf = GroupKFold(n_splits=5)
+    auc_scores = {name : [] for name in models}
+
+    for train_idx, test_idx in gkf.split(X, y, groups):
+        X_train, X_test = X[train_idx], X[test_idx]
+        y_train, y_test = y[train_idx], y[test_idx]
+        for name, model in models.items():
+            model.fit(X_train, y_train)
+            try:
+                y_score = model.predict_proba(X_test)[:,1]
+            except:
+                y_score = model.decision_function(X_test)
+            auc = roc_auc_score(y_test, y_score)
+            auc_scores[name].append(auc)
+
+    auc_results = {}
+    for name, scores in auc_scores.items():
+        print(f"\n{name}: mean AUC = {numpy.mean(scores):.4f}")
+        auc_results[name] = sum(scores)/len(scores)
+
+    for name, model, in models.items():
         cv_scores = cross_val_score(model, X, y, cv=cv, groups=groups)
         print(
             f"\n{name}: 3D CV Accuracy = {cv_scores.mean():.2%} (+/- {cv_scores.std():.2%})"
@@ -308,7 +328,7 @@ def main():
         ax.set_ylabel("Lempel-Ziv Complexity")
         ax.set_zlabel("Delta/Alpha Power Ratio")
         ax.set_title(
-            f"{name}\n3D CV Accuracy: {cv_scores.mean():.2%} (+/- {cv_scores.std():.2%})"
+            f"{name}\n3D CV Accuracy: {cv_scores.mean():.2%} (+/- {cv_scores.std():.2%})\nMean AUC: {auc_results[name]:.4f}"
         )
         ax.legend(fontsize="x-small", loc="upper left")
 
