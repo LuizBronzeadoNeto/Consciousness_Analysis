@@ -3,9 +3,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import mne
 from datetime import datetime
-import os
 import shutil
-import copy
 def load_data(path):
     raw = mne.io.read_raw_edf(path, preload=True)
     eeg_channels = [ch for ch in raw.ch_names if ch.startswith("EEG")]
