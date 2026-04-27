@@ -173,8 +173,8 @@ def tuning_svm(X, y, groups):
         RobustScaler(), SVC(kernel="rbf", class_weight="balanced", probability=True)
     )
 
-    search = RandomizedSearchCV(pipeline_svm, param_dist, n_iter=100, cv=inner_cv, scoring="roc_auc", 
-                                n_jobs=1, random_state=42).fit(X, y, groups=groups)
+    search = RandomizedSearchCV(pipeline_svm, param_dist, n_iter=1000, cv=inner_cv, scoring="roc_auc", 
+                                n_jobs=-1, random_state=42).fit(X, y, groups=groups)
 
     print(f"[SVM] Melhores parâmetros: {search.best_params_}")
 
@@ -201,7 +201,7 @@ def main():
         "SVM (RBF Kernel)": make_pipeline(
             StandardScaler(), SVC(kernel="rbf", class_weight="balanced")
         ),
-        "SVM (Grid Search/Optimized)": svm_tuned,
+        "SVM (Randomized Search/Optimized)": svm_tuned,
     }
 
     gkf = GroupKFold(n_splits=5)
