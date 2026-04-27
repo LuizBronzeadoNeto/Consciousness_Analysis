@@ -1,3 +1,6 @@
 /__pycache__/
 /physionet_siena_eeg/
 /siena_discretized/
+/dataset/*/
+/dataset/LICENSE.txt/
+/dataset/SHA256SUMS.txt/
