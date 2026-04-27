@@ -173,7 +173,7 @@ def tuning_svm(X, y, groups):
         RobustScaler(), SVC(kernel="rbf", class_weight="balanced", probability=True)
     )
 
-    search = RandomizedSearchCV(pipeline_svm, param_dist, n_iter=100, cv=inner_cv, scoring="accuracy", 
+    search = RandomizedSearchCV(pipeline_svm, param_dist, n_iter=100, cv=inner_cv, scoring="roc_auc", 
                                 n_jobs=1, random_state=42).fit(X, y, groups=groups)
 
     print(f"[SVM] Melhores parâmetros: {search.best_params_}")
@@ -237,6 +237,7 @@ def main():
     )
 
     for ax, (name, model) in zip(axes, models.items()):
+        cv_scores = cross_val_score(model, X, y, cv=cv, groups=groups)
         model.fit(X, y)
 
         is_outlier = df["n_samples"] <= OUTLIER_THRESHOLD
