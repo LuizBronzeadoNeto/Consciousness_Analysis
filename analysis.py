@@ -173,7 +173,7 @@ def tuning_svm(X, y, groups):
         RobustScaler(), SVC(kernel="rbf", class_weight="balanced", probability=True)
     )
 
-    search = RandomizedSearchCV(pipeline_svm, param_dist, n_iter=1000, cv=inner_cv, scoring="roc_auc", 
+    search = RandomizedSearchCV(pipeline_svm, param_dist, n_iter=100, cv=inner_cv, scoring="roc_auc", 
                                 n_jobs=-1, random_state=42).fit(X, y, groups=groups)
 
     print(f"[SVM] Melhores parâmetros: {search.best_params_}")
