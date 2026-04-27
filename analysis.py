@@ -3,7 +3,6 @@ import pandas as pd
 import glob
 import os
 import matplotlib.pyplot as plt
-from sklearn.inspection import DecisionBoundaryDisplay
 from sklearn.linear_model import LogisticRegression
 from sklearn.svm import SVC
 from sklearn.preprocessing import PolynomialFeatures, StandardScaler
@@ -12,9 +11,9 @@ from sklearn.model_selection import cross_val_score, StratifiedKFold, GroupKFold
 import complexity_calculations as eeg
 from sklearn.model_selection import GridSearchCV
 from sklearn.preprocessing import RobustScaler
-from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 from sklearn.metrics import roc_auc_score
-from sklearn.utils.validation import check_is_fitted
+from scipy.stats import loguniform
+from sklearn.model_selection import RandomizedSearchCV
 OUTLIER_THRESHOLD = 35
 
 
@@ -164,9 +163,9 @@ def plot_scatter(ax, df, feat_x="K", feat_y="LZ"):
 def tuning_svm(X, y, groups):
     inner_cv = GroupKFold(n_splits=5)
 
-    param_grid = {
-        "svc__C": [0.1, 1, 10, 100],
-        "svc__gamma": [1, 0.1, 0.01, 0.001, "scale"],
+    param_dist = {
+        "svc__C": loguniform(0.1, 1000),
+        "svc__gamma": loguniform(1e-4, 1),
         "svc__kernel": ["rbf"],
     }
     
@@ -174,13 +173,12 @@ def tuning_svm(X, y, groups):
         RobustScaler(), SVC(kernel="rbf", class_weight="balanced", probability=True)
     )
 
-    grid_search = GridSearchCV(
-        pipeline_svm, param_grid, cv=inner_cv, scoring="accuracy", n_jobs=-1
-    ).fit(X, y, groups=groups)
+    search = RandomizedSearchCV(pipeline_svm, param_dist, n_iter=100, cv=inner_cv, scoring="roc_auc", 
+                                n_jobs=1, random_state=42).fit(X, y, groups=groups)
 
-    print(f"[SVM] Melhores parâmetros: {grid_search.best_params_}")
+    print(f"[SVM] Melhores parâmetros: {search.best_params_}")
 
-    return grid_search.best_estimator_
+    return search.best_estimator_
 
 
 def main():
@@ -214,10 +212,12 @@ def main():
         y_train, y_test = y[train_idx], y[test_idx]
         for name, model in models.items():
             model.fit(X_train, y_train)
-            try:
+            if hasattr(model, "predict_proba"):
                 y_score = model.predict_proba(X_test)[:,1]
-            except:
+            elif hasattr(model, "decision_function"):
                 y_score = model.decision_function(X_test)
+            else:
+                raise ValueError(f"{name} has no scoring method")
             auc = roc_auc_score(y_test, y_score)
             auc_scores[name].append(auc)
 
