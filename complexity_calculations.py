@@ -35,27 +35,42 @@ def lempel_ziv_complexity(signal):
     binary = (signal > median).astype(numpy.int8)
     return lz_fast(binary)
 
+def _chaos_batch(signal, cs):
+    signal = numpy.asarray(signal, dtype=numpy.float64)
+    cs = numpy.asarray(cs, dtype=numpy.float64)
+    n = signal.size
+    j = numpy.arange(n, dtype=numpy.float64)
+
+    phase = j[:, None] * cs[None, :]
+    cos_mat = numpy.cos(phase)
+    sin_mat = numpy.sin(phase)
+
+    weighted = signal[:, None]
+    pc = numpy.cumsum(weighted * cos_mat, axis=0)
+    qc = numpy.cumsum(weighted * sin_mat, axis=0)
+    M = pc * pc + qc * qc
+
+    E_x = signal.mean()
+    denom = 1.0 - numpy.cos(cs)
+    V_osc = (E_x * E_x) * (1.0 - cos_mat) / denom[None, :]
+    D = M - V_osc
+
+    jc = j - j.mean()
+    j_var = (jc * jc).sum()
+    Dc = D - D.mean(axis=0)
+    D_var = (Dc * Dc).sum(axis=0)
+    return (jc[:, None] * Dc).sum(axis=0) / numpy.sqrt(j_var * D_var)
+
+
 def gottwald_melbourne_chaos(signal, c=None):
-    n = len(signal)
     if c is None:
         c = numpy.random.uniform(numpy.pi/5, 4*numpy.pi/5)
-    j = numpy.arange(n)
-    pc = numpy.cumsum(signal * numpy.cos(j*c))
-    qc = numpy.cumsum(signal * numpy.sin(j*c))
-
-    M = pc**2 + qc**2
-    E_x = numpy.mean(signal)
-    V_osc = E_x**2 * (1 - numpy.cos(j * c)) / (1 - numpy.cos(c))
-    D = M - V_osc
-    K = numpy.corrcoef(j, D)[0, 1]
-
-    return K
+    return float(_chaos_batch(signal, numpy.array([c], dtype=numpy.float64))[0])
 
 def median_K(signal, n_trials=50, seed=42):
     rng = numpy.random.RandomState(seed)
     cs = rng.uniform(numpy.pi/5, 4*numpy.pi/5, size=n_trials)
-    Ks = [gottwald_melbourne_chaos(signal, c=c) for c in cs]
-    return numpy.median(Ks)
+    return float(numpy.median(_chaos_batch(signal, cs)))
 
 def criticality_proximity(k, alpha=0.85):
     k = numpy.clip(k, 0, 1)
