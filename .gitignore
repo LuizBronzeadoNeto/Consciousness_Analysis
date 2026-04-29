@@ -4,3 +4,5 @@
 /dataset/*/
 /dataset/LICENSE.txt/
 /dataset/SHA256SUMS.txt/
+/.cache/
+/perf_logs/
