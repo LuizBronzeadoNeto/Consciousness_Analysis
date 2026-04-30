@@ -7,9 +7,8 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.svm import SVC
 from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 from sklearn.pipeline import make_pipeline
-from sklearn.model_selection import cross_val_score, StratifiedKFold, GroupKFold
+from sklearn.model_selection import cross_val_score, GroupKFold
 import complexity_calculations as eeg
-from sklearn.model_selection import GridSearchCV
 from sklearn.preprocessing import RobustScaler
 from sklearn.metrics import roc_auc_score
 from scipy.stats import loguniform
@@ -327,7 +326,7 @@ def tuning_svm(X, y, groups):
             n_jobs=-1, random_state=42,
         ).fit(X, y, groups=groups)
 
-    print(f"[SVM] Melhores parâmetros: {search.best_params_}")
+    print(f"[SVM] Best parameters:: {search.best_params_}")
 
     return search.best_estimator_
 
@@ -337,9 +336,9 @@ def main():
         X, y, df, groups = load_data()
         cv = GroupKFold(n_splits=5)
 
-        print(f"Total de amostras (linhas): {len(df)}")
-        print(f"Total de colunas (features): {X.shape[1]}")
-        print(f"Pacientes únicos: {len(numpy.unique(groups))}")
+        print(f"Total samples (lines): {len(df)}")
+        print(f"Total rows (features): {X.shape[1]}")
+        print(f"Unique patients: {len(numpy.unique(groups))}")
         print(f"Conscious: {(y == 1).sum()}, Unconscious: {(y == 0).sum()}")
 
         svm_tuned = tuning_svm(X, y, groups)
@@ -356,11 +355,10 @@ def main():
             "SVM (Randomized Search/Optimized)": svm_tuned,
         }
 
-        gkf = GroupKFold(n_splits=5)
         auc_scores = {name: [] for name in models}
 
         with time_block("auc_loop_total", n_folds=5, n_models=len(models)):
-            for fold_idx, (train_idx, test_idx) in enumerate(gkf.split(X, y, groups)):
+            for fold_idx, (train_idx, test_idx) in enumerate(cv.split(X, y, groups)):
                 X_train, X_test = X[train_idx], X[test_idx]
                 y_train, y_test = y[train_idx], y[test_idx]
                 for name, model in models.items():
