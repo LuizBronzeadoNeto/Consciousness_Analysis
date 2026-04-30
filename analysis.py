@@ -204,10 +204,9 @@ def main():
         "SVM (Randomized Search/Optimized)": svm_tuned,
     }
 
-    gkf = GroupKFold(n_splits=5)
     auc_scores = {name : [] for name in models}
 
-    for train_idx, test_idx in gkf.split(X, y, groups):
+    for train_idx, test_idx in cv.split(X, y, groups):
         X_train, X_test = X[train_idx], X[test_idx]
         y_train, y_test = y[train_idx], y[test_idx]
         for name, model in models.items():
