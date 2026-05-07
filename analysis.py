@@ -4,7 +4,7 @@ import glob
 import os
 import matplotlib.pyplot as plt
 from sklearn.linear_model import LogisticRegression
-from sklearn.svm import SVC
+from sklearn.svm import SVC, LinearSVC
 from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 from sklearn.pipeline import make_pipeline
 from sklearn.model_selection import cross_val_score, GroupKFold
@@ -20,9 +20,10 @@ import time
 import contextlib
 import datetime
 import sys
-
+import yaml
+from sklearn.kernel_approximation import Nystroem
 OUTLIER_THRESHOLD = 35
-
+WINDOW_SIZE = 3
 _REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 _RUN_ID = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 _PERF_DIR = os.path.join(_REPO_ROOT, "perf_logs")
@@ -121,6 +122,13 @@ def _load_csv_cached(csv_path, kind, case_id, cohort, perf_records):
 
     return arr
 
+def identify_compound(case_id):
+    with open("dataset/OR/rx_sorted_case_ids.yml", 'r') as file:
+        rx_sorted_case_ids = yaml.safe_load(file)
+        compound = next(k for k, v in rx_sorted_case_ids.items() if case_id in v)
+        if compound == None: raise ValueError(f"invalid case id: {case_id}")
+    return compound
+
 
 def _process_one_case(filepath):
     """Process a single `*_Sdb.csv` and its sibling files into 0–2 result rows.
@@ -174,44 +182,63 @@ def _process_one_case(filepath):
         quality_mask = quality_mask[:min_len]
 
         states = {0: "Unconscious", 1: "Conscious"}
-
         for state_val, state_name in states.items():
             state_mask = (labels == state_val) & quality_mask
             alpha_state = alpha[state_mask]
-
-            if len(alpha_state) < 15:
-                continue
-
+            delta_state = delta[state_mask]
+            
             if numpy.std(alpha_state) == 0:
                 continue
-
-            with _collect_block(perf_records, "lz", case=case_id, state=state_name):
-                LZ = eeg.lempel_ziv_complexity(alpha_state)
 
             alpha_norm = (alpha_state - numpy.mean(alpha_state)) / numpy.std(
                 alpha_state
             )
-            with _collect_block(perf_records, "median_K", case=case_id, state=state_name):
-                K = eeg.median_K(alpha_norm)
 
-            delta_state = delta[state_mask]
-            delta_alpha_ratio = numpy.mean(delta_state) / (
-                numpy.mean(alpha_state) + 1e-10
-            )
-
-            results.append(
-                {
-                    "case": case_id,
-                    "state": state_name,
-                    "K": K,
-                    "LZ": LZ,
-                    "delta_alpha_ratio": delta_alpha_ratio,
-                    "n_samples": len(alpha_state),
-                }
-            )
+            compound = ''
+            if cohort == 'OR':
+                compound = identify_compound(case_id)
+            else: compound = 'pure_propofol'
+            for epoch, i in enumerate(range(0, len(alpha_state) - WINDOW_SIZE, WINDOW_SIZE)):
+                with _collect_block(perf_records, "epoch_metrics", case=case_id, state=state_name, epoch_id=epoch):
+                    alpha_group = alpha_state[i:i + WINDOW_SIZE]
+                    delta_group = delta_state[i:i + WINDOW_SIZE]
+                    LZ = eeg.lempel_ziv_complexity(alpha_group)
+                    K = eeg.median_K(alpha_group)
+                    delta_alpha_ratio = numpy.mean(delta_group) / (
+                        numpy.mean(alpha_group) + 1e-10
+                    )
+                    results.append(
+                        {
+                            "case": case_id,
+                            "state": state_name,
+                            "epoch_number": epoch,
+                            "K": K,
+                            "LZ": LZ,
+                            "delta_alpha_ratio": delta_alpha_ratio,
+                            "n_samples": len(alpha_state),
+                            "compound": compound,
+                        }
+                    )
+                unprocessed_samples = len(alpha_state) % 3
+                if unprocessed_samples > 0:
+                    LZ = eeg.lempel_ziv_complexity(alpha_state[-WINDOW_SIZE:])
+                    K = eeg.median_K(alpha_norm[-WINDOW_SIZE:])
+                    results.append(
+                        {
+                            "case": case_id,
+                            "state": state_name,
+                            "K": K,
+                            "LZ": LZ,
+                            "delta_alpha_ratio": delta_alpha_ratio,
+                            "n_samples": len(alpha_state),
+                            "compound": compound,
+                        }
+                    )
+          
 
     except Exception as e:
         # Surface the failure in perf log so it isn't silent
+        print(f"ERROR{e}")
         perf_records.append(
             _make_record(
                 "case_error", time.perf_counter() - case_t0,
@@ -311,13 +338,14 @@ def tuning_svm(X, y, groups):
     inner_cv = GroupKFold(n_splits=5)
 
     param_dist = {
-        "svc__C": loguniform(0.1, 1000),
-        "svc__gamma": loguniform(1e-4, 1),
-        "svc__kernel": ["rbf"],
+        "linearsvc__C": loguniform(0.1, 1000),
+        "nystroem__gamma": loguniform(1e-4, 1),
     }
 
     pipeline_svm = make_pipeline(
-        RobustScaler(), SVC(kernel="rbf", class_weight="balanced", probability=True)
+        RobustScaler(),
+        Nystroem(n_components=500, random_state=42),
+        LinearSVC(class_weight="balanced", dual=False, max_iter=2000)
     )
 
     with time_block("tuning_svm", n_iter=100):
@@ -335,6 +363,10 @@ def main():
     with time_block("total_run"):
         X, y, df, groups = load_data()
         cv = GroupKFold(n_splits=5)
+        propofol_mask = df["compound"] == "pure_propofol"
+        sevoflurane_mask = df["compound"].isin(["mixed", "pure_sevo"])
+
+        print(df[sevoflurane_mask][["case", "state", "n_samples"]].to_string())
 
         print(f"Total samples (lines): {len(df)}")
         print(f"Total rows (features): {X.shape[1]}")
@@ -357,10 +389,17 @@ def main():
 
         auc_scores = {name: [] for name in models}
 
+        #y_score_full = svm_tuned.decision_function(X)
+        
+        #auc_propofol = roc_auc_score(y[propofol_mask], y_score_full[propofol_mask])
+        #auc_sevo = roc_auc_score(y[sevoflurane_mask], y_score_full[sevoflurane_mask])
+        #print(f"svm propofol AUC {auc_propofol}")
+        #print(f"svm sevo auc {auc_sevo}")
+
         with time_block("auc_loop_total", n_folds=5, n_models=len(models)):
             for fold_idx, (train_idx, test_idx) in enumerate(cv.split(X, y, groups)):
                 X_train, X_test = X[train_idx], X[test_idx]
-                y_train, y_test = y[train_idx], y[test_idx]
+                y_train, y_test = y[train_idx], y[test_idx] 
                 for name, model in models.items():
                     with time_block("cv_fold", fold=fold_idx, model=name):
                         model.fit(X_train, y_train)
