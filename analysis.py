@@ -219,21 +219,21 @@ def _process_one_case(filepath):
                             "compound": compound,
                         }
                     )
-                unprocessed_samples = len(alpha_state) % 3
-                if unprocessed_samples > 0:
-                    LZ = eeg.lempel_ziv_complexity(alpha_state[-WINDOW_SIZE:])
-                    K = eeg.median_K(alpha_norm[-WINDOW_SIZE:])
-                    results.append(
-                        {
-                            "case": case_id,
-                            "state": state_name,
-                            "K": K,
-                            "LZ": LZ,
-                            "delta_alpha_ratio": delta_alpha_ratio,
-                            "n_samples": len(alpha_state),
-                            "compound": compound,
-                        }
-                    )
+            unprocessed_samples = len(alpha_state) % 3
+            if unprocessed_samples > 0:
+                LZ = eeg.lempel_ziv_complexity(alpha_state[-WINDOW_SIZE:])
+                K = eeg.median_K(alpha_norm[-WINDOW_SIZE:])
+                results.append(
+                    {
+                        "case": case_id,
+                        "state": state_name,
+                        "K": K,
+                        "LZ": LZ,
+                        "delta_alpha_ratio": delta_alpha_ratio,
+                        "n_samples": len(alpha_state),
+                        "compound": compound,
+                    }
+                )
           
 
     except Exception as e:
@@ -339,7 +339,8 @@ def tuning_svm(X, y, groups):
 
     param_dist = {
         "linearsvc__C": loguniform(0.1, 1000),
-        "nystroem__gamma": loguniform(1e-4, 1),
+        #"nystroem__gamma": loguniform(1e-4, 1),
+        #"svc__kernel": ["rbf"], 
     }
 
     pipeline_svm = make_pipeline(
@@ -348,9 +349,9 @@ def tuning_svm(X, y, groups):
         LinearSVC(class_weight="balanced", dual=False, max_iter=2000)
     )
 
-    with time_block("tuning_svm", n_iter=100):
+    with time_block("tuning_svm", n_iter=20):
         search = RandomizedSearchCV(
-            pipeline_svm, param_dist, n_iter=100, cv=inner_cv, scoring="roc_auc",
+            pipeline_svm, param_dist, n_iter=20, cv=inner_cv, scoring="roc_auc",
             n_jobs=-1, random_state=42,
         ).fit(X, y, groups=groups)
 
@@ -376,14 +377,14 @@ def main():
         svm_tuned = tuning_svm(X, y, groups)
 
         models = {
-            "Logistic Regression (Quadratic)": make_pipeline(
-                StandardScaler(),
-                PolynomialFeatures(degree=2),
-                LogisticRegression(C=1.0, class_weight="balanced"),
-            ),
-            "SVM (RBF Kernel)": make_pipeline(
-                StandardScaler(), SVC(kernel="rbf", class_weight="balanced")
-            ),
+            #"Logistic Regression (Quadratic)": make_pipeline(
+             #   StandardScaler(),
+              #  PolynomialFeatures(degree=2),
+               # LogisticRegression(C=1.0, class_weight="balanced"),
+            #),
+            #"SVM (RBF Kernel)": make_pipeline(
+             #   StandardScaler(), SVC(kernel="rbf", class_weight="balanced")
+            #),
             "SVM (Randomized Search/Optimized)": svm_tuned,
         }
 
