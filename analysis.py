@@ -3,17 +3,16 @@ import pandas as pd
 import glob
 import os
 import matplotlib.pyplot as plt
-from sklearn.linear_model import LogisticRegression
-from sklearn.svm import SVC, LinearSVC
-from sklearn.preprocessing import PolynomialFeatures, StandardScaler
+from sklearn.svm import SVC
 from sklearn.pipeline import make_pipeline
 from sklearn.model_selection import cross_val_score, GroupKFold
 import complexity_calculations as eeg
-from sklearn.preprocessing import RobustScaler
+from sklearn.preprocessing import PowerTransformer
 from sklearn.metrics import roc_auc_score
 from scipy.stats import loguniform
 from sklearn.model_selection import RandomizedSearchCV
 from joblib import Parallel, delayed
+import argparse
 import logging
 import json
 import time
@@ -21,9 +20,21 @@ import contextlib
 import datetime
 import sys
 import yaml
-from sklearn.kernel_approximation import Nystroem
+
 OUTLIER_THRESHOLD = 35
-WINDOW_SIZE = 3
+WINDOW_BINS = 30
+WINDOW_STRIDE = 15
+QUALITY_MIN_FRAC = 0.8
+FEATURE_COLS = [
+    "K",
+    "LZ",
+    "log_ratio",
+    "log_alpha_var",
+    "log_theta",
+    "log_beta",
+    "log_gamma",
+    "spectral_entropy",
+]
 _REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 _RUN_ID = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 _PERF_DIR = os.path.join(_REPO_ROOT, "perf_logs")
@@ -97,9 +108,8 @@ def _load_csv_cached(csv_path, kind, case_id, cohort, perf_records):
     cache_dir = os.path.join(_CACHE_DIR, cohort)
     npy_path = os.path.join(cache_dir, f"{case_id}_{kind}.npy")
     try:
-        if (
-            os.path.exists(npy_path)
-            and os.path.getmtime(npy_path) >= os.path.getmtime(csv_path)
+        if os.path.exists(npy_path) and os.path.getmtime(npy_path) >= os.path.getmtime(
+            csv_path
         ):
             with _collect_block(perf_records, "csv_cache_hit", case=case_id, kind=kind):
                 return numpy.load(npy_path)
@@ -122,12 +132,18 @@ def _load_csv_cached(csv_path, kind, case_id, cohort, perf_records):
 
     return arr
 
+
+with open(os.path.join(_REPO_ROOT, "dataset/OR/rx_sorted_case_ids.yml")) as _rx_fh:
+    _RX_BY_CASE = {
+        cid: cmpd for cmpd, cids in yaml.safe_load(_rx_fh).items() for cid in cids
+    }
+
+
 def identify_compound(case_id):
-    with open("dataset/OR/rx_sorted_case_ids.yml", 'r') as file:
-        rx_sorted_case_ids = yaml.safe_load(file)
-        compound = next(k for k, v in rx_sorted_case_ids.items() if case_id in v)
-        if compound == None: raise ValueError(f"invalid case id: {case_id}")
-    return compound
+    try:
+        return _RX_BY_CASE[case_id]
+    except KeyError as exc:
+        raise ValueError(f"invalid case id: {case_id}") from exc
 
 
 def _process_one_case(filepath):
@@ -148,7 +164,10 @@ def _process_one_case(filepath):
         sdb = _load_csv_cached(filepath, "Sdb", case_id, cohort, perf_records)
         f = _load_csv_cached(
             os.path.join(base_path, f"{case_id}_f.csv"),
-            "f", case_id, cohort, perf_records,
+            "f",
+            case_id,
+            cohort,
+            perf_records,
         ).flatten()
 
         l_path = os.path.join(base_path, f"{case_id}_l.csv")
@@ -160,9 +179,15 @@ def _process_one_case(filepath):
         if P.shape[0] == len(f):
             alpha = P[(f >= 8) & (f <= 12), :].mean(axis=0)
             delta = P[(f >= 1) & (f <= 4), :].mean(axis=0)
+            theta = P[(f >= 4) & (f <= 8), :].mean(axis=0)
+            beta = P[(f >= 13) & (f <= 30), :].mean(axis=0)
+            gamma = P[(f >= 30) & (f <= 45), :].mean(axis=0)
         else:
             alpha = P[:, (f >= 8) & (f <= 12)].mean(axis=1)
             delta = P[:, (f >= 1) & (f <= 4)].mean(axis=1)
+            theta = P[:, (f >= 4) & (f <= 8)].mean(axis=1)
+            beta = P[:, (f >= 13) & (f <= 30)].mean(axis=1)
+            gamma = P[:, (f >= 30) & (f <= 45)].mean(axis=1)
 
         min_len = min(len(alpha), len(delta), len(labels))
 
@@ -178,77 +203,77 @@ def _process_one_case(filepath):
 
         alpha = alpha[:min_len]
         delta = delta[:min_len]
+        theta = theta[:min_len]
+        beta = beta[:min_len]
+        gamma = gamma[:min_len]
         labels = labels[:min_len]
         quality_mask = quality_mask[:min_len]
 
-        states = {0: "Unconscious", 1: "Conscious"}
-        for state_val, state_name in states.items():
-            state_mask = (labels == state_val) & quality_mask
-            alpha_state = alpha[state_mask]
-            delta_state = delta[state_mask]
-            
-            if numpy.std(alpha_state) == 0:
+        compound = identify_compound(case_id) if cohort == "OR" else "pure_propofol"
+
+        for i in range(0, min_len - WINDOW_BINS + 1, WINDOW_STRIDE):
+            sl = slice(i, i + WINDOW_BINS)
+            if quality_mask[sl].mean() < QUALITY_MIN_FRAC:
                 continue
+            lab_win = labels[sl]
+            if lab_win.min() != lab_win.max():
+                continue
+            alpha_win = alpha[sl]
+            if numpy.std(alpha_win) == 0:
+                continue
+            delta_win = delta[sl]
 
-            alpha_norm = (alpha_state - numpy.mean(alpha_state)) / numpy.std(
-                alpha_state
-            )
+            with _collect_block(
+                perf_records, "epoch_metrics", case=case_id, epoch_id=i
+            ):
+                LZ = eeg.lempel_ziv_complexity(alpha_win)
+                K = eeg.median_K(alpha_win)
+                alpha_mean = numpy.mean(alpha_win)
+                delta_mean = numpy.mean(delta_win)
+                log_ratio = float(
+                    numpy.log(delta_mean + 1e-12) - numpy.log(alpha_mean + 1e-12)
+                )
+                log_alpha_var = float(numpy.log(numpy.var(alpha_win) + 1e-12))
+                if P.shape[0] == len(f):
+                    spec = P[:, sl].mean(axis=1)
+                else:
+                    spec = P[sl, :].mean(axis=0)
+                spec = spec / (spec.sum() + 1e-12)
+                spectral_entropy = float(-(spec * numpy.log(spec + 1e-12)).sum())
 
-            compound = ''
-            if cohort == 'OR':
-                compound = identify_compound(case_id)
-            else: compound = 'pure_propofol'
-            for epoch, i in enumerate(range(0, len(alpha_state) - WINDOW_SIZE, WINDOW_SIZE)):
-                with _collect_block(perf_records, "epoch_metrics", case=case_id, state=state_name, epoch_id=epoch):
-                    alpha_group = alpha_state[i:i + WINDOW_SIZE]
-                    delta_group = delta_state[i:i + WINDOW_SIZE]
-                    LZ = eeg.lempel_ziv_complexity(alpha_group)
-                    K = eeg.median_K(alpha_group)
-                    delta_alpha_ratio = numpy.mean(delta_group) / (
-                        numpy.mean(alpha_group) + 1e-10
-                    )
-                    results.append(
-                        {
-                            "case": case_id,
-                            "state": state_name,
-                            "epoch_number": epoch,
-                            "K": K,
-                            "LZ": LZ,
-                            "delta_alpha_ratio": delta_alpha_ratio,
-                            "n_samples": len(alpha_state),
-                            "compound": compound,
-                        }
-                    )
-            unprocessed_samples = len(alpha_state) % 3
-            if unprocessed_samples > 0:
-                LZ = eeg.lempel_ziv_complexity(alpha_state[-WINDOW_SIZE:])
-                K = eeg.median_K(alpha_norm[-WINDOW_SIZE:])
                 results.append(
                     {
                         "case": case_id,
-                        "state": state_name,
+                        "state": "Conscious" if lab_win[0] == 1 else "Unconscious",
+                        "epoch_number": i,
                         "K": K,
                         "LZ": LZ,
-                        "delta_alpha_ratio": delta_alpha_ratio,
-                        "n_samples": len(alpha_state),
+                        "log_ratio": log_ratio,
+                        "log_alpha_var": log_alpha_var,
+                        "log_theta": float(numpy.log(theta[sl].mean() + 1e-12)),
+                        "log_beta": float(numpy.log(beta[sl].mean() + 1e-12)),
+                        "log_gamma": float(numpy.log(gamma[sl].mean() + 1e-12)),
+                        "spectral_entropy": spectral_entropy,
+                        "n_samples": min_len,
                         "compound": compound,
                     }
                 )
-          
 
     except Exception as e:
         # Surface the failure in perf log so it isn't silent
         print(f"ERROR{e}")
         perf_records.append(
             _make_record(
-                "case_error", time.perf_counter() - case_t0,
+                "case_error",
+                time.perf_counter() - case_t0,
                 {"case": case_id, "error": repr(e)},
             )
         )
 
     perf_records.append(
         _make_record(
-            "case", time.perf_counter() - case_t0,
+            "case",
+            time.perf_counter() - case_t0,
             {"case": case_id, "cohort": cohort, "rows": len(results)},
         )
     )
@@ -281,7 +306,7 @@ def load_data():
         df = pd.DataFrame(results)
         df["label"] = df["state"].map({"Conscious": 1, "Unconscious": 0})
 
-        X = df[["K", "LZ", "delta_alpha_ratio"]].values
+        X = df[FEATURE_COLS].values
         y = df["label"].values
         groups = df["case"].values
 
@@ -334,25 +359,44 @@ def plot_scatter(ax, df, feat_x="K", feat_y="LZ"):
         )
 
 
-def tuning_svm(X, y, groups):
+def tuning_svm(X, y, groups, gpu=False):
     inner_cv = GroupKFold(n_splits=5)
 
-    param_dist = {
-        "linearsvc__C": loguniform(0.1, 1000),
-        #"nystroem__gamma": loguniform(1e-4, 1),
-        #"svc__kernel": ["rbf"], 
-    }
+    if gpu:
+        from cuml.preprocessing import RobustScaler as cuRobustScaler
+        from cuml.svm import SVC as cuSVC
+        import cuml
 
-    pipeline_svm = make_pipeline(
-        RobustScaler(),
-        Nystroem(n_components=500, random_state=42),
-        LinearSVC(class_weight="balanced", dual=False, max_iter=2000)
-    )
+        cuml.set_global_output_type("numpy")
+        param_dist = {
+            "svc__C": loguniform(0.1, 1000),
+            "svc__gamma": loguniform(1e-4, 1),
+        }
+        pipeline_svm = make_pipeline(
+            cuRobustScaler(),
+            cuSVC(kernel="rbf", class_weight="balanced", probability=False),
+        )
+        n_jobs = 1
+    else:
+        param_dist = {
+            "svc__C": loguniform(0.1, 1000),
+            "svc__gamma": loguniform(1e-4, 1),
+        }
+        pipeline_svm = make_pipeline(
+            PowerTransformer(method="yeo-johnson", standardize=True),
+            SVC(kernel="rbf", class_weight="balanced", probability=False),
+        )
+        n_jobs = -1
 
-    with time_block("tuning_svm", n_iter=20):
+    with time_block("tuning_svm", n_iter=60, gpu=gpu):
         search = RandomizedSearchCV(
-            pipeline_svm, param_dist, n_iter=20, cv=inner_cv, scoring="roc_auc",
-            n_jobs=-1, random_state=42,
+            pipeline_svm,
+            param_dist,
+            n_iter=60,
+            cv=inner_cv,
+            scoring="roc_auc",
+            n_jobs=n_jobs,
+            random_state=42,
         ).fit(X, y, groups=groups)
 
     print(f"[SVM] Best parameters:: {search.best_params_}")
@@ -361,7 +405,15 @@ def tuning_svm(X, y, groups):
 
 
 def main():
-    with time_block("total_run"):
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--gpu",
+        action="store_true",
+        help="Use cuML GPU SVM (requires cuml installed; drops Nystroem, uses exact RBF)",
+    )
+    args = parser.parse_args()
+
+    with time_block("total_run", gpu=args.gpu):
         X, y, df, groups = load_data()
         cv = GroupKFold(n_splits=5)
         propofol_mask = df["compound"] == "pure_propofol"
@@ -374,33 +426,38 @@ def main():
         print(f"Unique patients: {len(numpy.unique(groups))}")
         print(f"Conscious: {(y == 1).sum()}, Unconscious: {(y == 0).sum()}")
 
-        svm_tuned = tuning_svm(X, y, groups)
+        if args.gpu:
+            X = numpy.ascontiguousarray(X, dtype=numpy.float32)
+            y = numpy.ascontiguousarray(y, dtype=numpy.int32)
+
+        svm_tuned = tuning_svm(X, y, groups, gpu=args.gpu)
 
         models = {
-            #"Logistic Regression (Quadratic)": make_pipeline(
-             #   StandardScaler(),
-              #  PolynomialFeatures(degree=2),
-               # LogisticRegression(C=1.0, class_weight="balanced"),
-            #),
-            #"SVM (RBF Kernel)": make_pipeline(
-             #   StandardScaler(), SVC(kernel="rbf", class_weight="balanced")
-            #),
+            # "Logistic Regression (Quadratic)": make_pipeline(
+            #   StandardScaler(),
+            #  PolynomialFeatures(degree=2),
+            # LogisticRegression(C=1.0, class_weight="balanced"),
+            # ),
+            # "SVM (RBF Kernel)": make_pipeline(
+            #   StandardScaler(), SVC(kernel="rbf", class_weight="balanced")
+            # ),
             "SVM (Randomized Search/Optimized)": svm_tuned,
         }
 
         auc_scores = {name: [] for name in models}
 
-        #y_score_full = svm_tuned.decision_function(X)
-        
-        #auc_propofol = roc_auc_score(y[propofol_mask], y_score_full[propofol_mask])
-        #auc_sevo = roc_auc_score(y[sevoflurane_mask], y_score_full[sevoflurane_mask])
-        #print(f"svm propofol AUC {auc_propofol}")
-        #print(f"svm sevo auc {auc_sevo}")
+        # y_score_full = svm_tuned.decision_function(X)
 
+        # auc_propofol = roc_auc_score(y[propofol_mask], y_score_full[propofol_mask])
+        # auc_sevo = roc_auc_score(y[sevoflurane_mask], y_score_full[sevoflurane_mask])
+        # print(f"svm propofol AUC {auc_propofol}")
+        # print(f"svm sevo auc {auc_sevo}")
+
+        oof_scores = {name: numpy.full(len(y), numpy.nan) for name in models}
         with time_block("auc_loop_total", n_folds=5, n_models=len(models)):
             for fold_idx, (train_idx, test_idx) in enumerate(cv.split(X, y, groups)):
                 X_train, X_test = X[train_idx], X[test_idx]
-                y_train, y_test = y[train_idx], y[test_idx] 
+                y_train, y_test = y[train_idx], y[test_idx]
                 for name, model in models.items():
                     with time_block("cv_fold", fold=fold_idx, model=name):
                         model.fit(X_train, y_train)
@@ -412,11 +469,22 @@ def main():
                             raise ValueError(f"{name} has no scoring method")
                         auc = roc_auc_score(y_test, y_score)
                         auc_scores[name].append(auc)
+                        oof_scores[name][test_idx] = y_score
 
         auc_results = {}
         for name, scores in auc_scores.items():
-            print(f"\n{name}: mean AUC = {numpy.mean(scores):.4f}")
+            print(f"\n{name}: window-level mean AUC = {numpy.mean(scores):.4f}")
             auc_results[name] = sum(scores) / len(scores)
+
+            agg = (
+                df.assign(score=oof_scores[name])
+                .groupby(["case", "state"], as_index=False)
+                .agg(score=("score", "mean"), label=("label", "first"))
+            )
+            print(
+                f"{name}: case-(state) AUC = {roc_auc_score(agg.label, agg.score):.4f} "
+                f"(n_pairs={len(agg)})"
+            )
 
         # Compute CV accuracy once per model — previously computed twice
         # (here and again inside the plot loop).
@@ -433,9 +501,13 @@ def main():
 
         with time_block("plot_build"):
             fig, axes = plt.subplots(
-                1, len(models), figsize=(8 * len(models), 7),
+                1,
+                len(models),
+                figsize=(8 * len(models), 7),
                 subplot_kw={"projection": "3d"},
+                squeeze=False,
             )
+            axes = axes.ravel()
 
             for ax, (name, model) in zip(axes, models.items()):
                 cv_scores = cv_scores_per_model[name]
@@ -454,7 +526,7 @@ def main():
                     ax.scatter(
                         ok["K"],
                         ok["LZ"],
-                        ok["delta_alpha_ratio"],
+                        ok["log_ratio"],
                         color=color,
                         label=state,
                         marker=marker,
@@ -465,7 +537,7 @@ def main():
                         ax.scatter(
                             short["K"],
                             short["LZ"],
-                            short["delta_alpha_ratio"],
+                            short["log_ratio"],
                             color="yellow",
                             label=f"{state} (n\u2264{OUTLIER_THRESHOLD})",
                             marker=marker,
@@ -473,66 +545,15 @@ def main():
                             s=50,
                         )
 
-                scaler = StandardScaler().fit(X)
-                X_scaled = scaler.transform(X)
-                k_range = numpy.linspace(
-                    X_scaled[:, 0].min() - 0.5, X_scaled[:, 0].max() + 0.5, 30
-                )
-                lz_range = numpy.linspace(
-                    X_scaled[:, 1].min() - 0.5, X_scaled[:, 1].max() + 0.5, 30
-                )
-                delta_range = numpy.linspace(
-                    X_scaled[:, 2].min() - 0.5, X_scaled[:, 2].max() + 0.5, 30
-                )
-
-                # One batched predict over the full 30x30x30 grid replaces
-                # 900 scalar `model.predict` calls. Same first-sign-change
-                # semantics along the delta axis as the original triple loop.
-                with time_block("boundary_grid", model=name):
-                    KK, LL, DD = numpy.meshgrid(
-                        k_range, lz_range, delta_range, indexing="ij"
-                    )
-                    grid_scaled = numpy.column_stack(
-                        [KK.ravel(), LL.ravel(), DD.ravel()]
-                    )
-                    grid_unscaled = scaler.inverse_transform(grid_scaled)
-                    preds = model.predict(grid_unscaled).reshape(30, 30, 30)
-                    diffs = numpy.diff(preds, axis=2) != 0
-                    has_change = diffs.any(axis=2)
-                    first_idx = diffs.argmax(axis=2)
-                    boundary = grid_unscaled.reshape(30, 30, 30, 3)
-                    ki_arr, li_arr = numpy.where(has_change)
-                    pts = boundary[ki_arr, li_arr, first_idx[has_change]]
-                    surface_k = pts[:, 0].tolist()
-                    surface_lz = pts[:, 1].tolist()
-                    surface_delta = pts[:, 2].tolist()
-
-                if surface_k:
-                    from matplotlib.tri import Triangulation
-
-                    try:
-                        tri = Triangulation(surface_k, surface_lz)
-                        ax.plot_trisurf(tri, surface_delta, alpha=0.25, color="purple")
-                    except Exception:
-                        ax.scatter(
-                            surface_k,
-                            surface_lz,
-                            surface_delta,
-                            color="purple",
-                            alpha=0.1,
-                            s=5,
-                            label="Decision boundary",
-                        )
-
                 ax.set_xlabel("Median K (Chaos)")
                 ax.set_ylabel("Lempel-Ziv Complexity")
-                ax.set_zlabel("Delta/Alpha Power Ratio")
+                ax.set_zlabel("log(Delta/Alpha)")
                 ax.set_title(
                     f"{name}\n3D CV Accuracy: {cv_scores.mean():.2%} (+/- {cv_scores.std():.2%})\nMean AUC: {auc_results[name]:.4f}"
                 )
                 ax.legend(fontsize="x-small", loc="upper left")
 
-            plt.suptitle("3D Classification (K, LZ, Delta/Alpha Ratio)", fontsize=16)
+            plt.suptitle("3D Classification (K, LZ, log(Delta/Alpha))", fontsize=16)
             plt.tight_layout(rect=[0, 0, 1, 0.96])
 
     plt.show()
