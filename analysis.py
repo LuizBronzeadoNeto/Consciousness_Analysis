@@ -419,8 +419,6 @@ def main():
         propofol_mask = df["compound"] == "pure_propofol"
         sevoflurane_mask = df["compound"].isin(["mixed", "pure_sevo"])
 
-        print(df[sevoflurane_mask][["case", "state", "n_samples"]].to_string())
-
         print(f"Total samples (lines): {len(df)}")
         print(f"Total rows (features): {X.shape[1]}")
         print(f"Unique patients: {len(numpy.unique(groups))}")
@@ -433,25 +431,17 @@ def main():
         svm_tuned = tuning_svm(X, y, groups, gpu=args.gpu)
 
         models = {
-            # "Logistic Regression (Quadratic)": make_pipeline(
-            #   StandardScaler(),
-            #  PolynomialFeatures(degree=2),
-            # LogisticRegression(C=1.0, class_weight="balanced"),
-            # ),
-            # "SVM (RBF Kernel)": make_pipeline(
-            #   StandardScaler(), SVC(kernel="rbf", class_weight="balanced")
-            # ),
             "SVM (Randomized Search/Optimized)": svm_tuned,
         }
 
         auc_scores = {name: [] for name in models}
 
-        # y_score_full = svm_tuned.decision_function(X)
+        y_score_full = svm_tuned.decision_function(X)
 
-        # auc_propofol = roc_auc_score(y[propofol_mask], y_score_full[propofol_mask])
-        # auc_sevo = roc_auc_score(y[sevoflurane_mask], y_score_full[sevoflurane_mask])
-        # print(f"svm propofol AUC {auc_propofol}")
-        # print(f"svm sevo auc {auc_sevo}")
+        auc_propofol = roc_auc_score(y[propofol_mask], y_score_full[propofol_mask])
+        auc_sevo = roc_auc_score(y[sevoflurane_mask], y_score_full[sevoflurane_mask])
+        print(f"SVM (Randomized Search/Optimized): median propofol AUC -> {auc_propofol}")
+        print(f"SVM (Randomized Search/Optimized): median sevoflurane + mixed auc {auc_sevo}")
 
         oof_scores = {name: numpy.full(len(y), numpy.nan) for name in models}
         with time_block("auc_loop_total", n_folds=5, n_models=len(models)):
