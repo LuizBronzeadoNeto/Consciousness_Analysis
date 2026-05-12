@@ -435,19 +435,17 @@ def main():
         }
 
         auc_scores = {name: [] for name in models}
-
-        y_score_full = svm_tuned.decision_function(X)
-
-        auc_propofol = roc_auc_score(y[propofol_mask], y_score_full[propofol_mask])
-        auc_sevo = roc_auc_score(y[sevoflurane_mask], y_score_full[sevoflurane_mask])
-        print(f"SVM (Randomized Search/Optimized): median propofol AUC -> {auc_propofol}")
-        print(f"SVM (Randomized Search/Optimized): median sevoflurane + mixed auc {auc_sevo}")
+        auc_median_propofol = {name: [] for name in models}
+        auc_median_sevo = {name: [] for name in models}
 
         oof_scores = {name: numpy.full(len(y), numpy.nan) for name in models}
         with time_block("auc_loop_total", n_folds=5, n_models=len(models)):
             for fold_idx, (train_idx, test_idx) in enumerate(cv.split(X, y, groups)):
                 X_train, X_test = X[train_idx], X[test_idx]
                 y_train, y_test = y[train_idx], y[test_idx]
+
+                test_propofol = propofol_mask[test_idx]
+                test_sevo = sevoflurane_mask[test_idx]
                 for name, model in models.items():
                     with time_block("cv_fold", fold=fold_idx, model=name):
                         model.fit(X_train, y_train)
@@ -461,9 +459,23 @@ def main():
                         auc_scores[name].append(auc)
                         oof_scores[name][test_idx] = y_score
 
+                        y_test_prop = y_test[test_propofol]
+                        y_score_prop = y_score[test_propofol]
+                        y_test_sevo = y_test[test_sevo]
+                        y_score_sevo = y_score[test_sevo]
+
+                        auc_prop = roc_auc_score(y_test_prop, y_score_prop)
+                        auc_median_propofol[name].append(auc_prop)
+                        auc_sevo = roc_auc_score(y_test_sevo, y_score_sevo)
+                        auc_median_sevo[name].append(auc_sevo)
+
         auc_results = {}
+        for name, scores in auc_median_propofol.items():
+            print(f"\n{name}: window-level median prop AUC = {numpy.median(scores):.4f}")
+        for name, scores in auc_median_sevo.items():
+            print(f"\n{name}: window-level median sevo AUC = {numpy.median(scores):.4f}")
         for name, scores in auc_scores.items():
-            print(f"\n{name}: window-level mean AUC = {numpy.mean(scores):.4f}")
+            print(f"\n{name}: window-level median AUC = {numpy.median(scores):.4f}")
             auc_results[name] = sum(scores) / len(scores)
 
             agg = (
