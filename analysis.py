@@ -256,6 +256,7 @@ def _process_one_case(filepath):
                         "spectral_entropy": spectral_entropy,
                         "n_samples": min_len,
                         "compound": compound,
+                        "cohort": cohort,
                     }
                 )
 
@@ -418,6 +419,7 @@ def main():
         cv = GroupKFold(n_splits=5)
         propofol_mask = df["compound"] == "pure_propofol"
         sevoflurane_mask = df["compound"].isin(["mixed", "pure_sevo"])
+        volunteer_mask = df["cohort"] != "OR"
 
         print(f"Total samples (lines): {len(df)}")
         print(f"Total rows (features): {X.shape[1]}")
@@ -437,8 +439,9 @@ def main():
         auc_scores = {name: [] for name in models}
         auc_median_propofol = {name: [] for name in models}
         auc_median_sevo = {name: [] for name in models}
-
+        auc_volunteers = {name: [] for name in models}
         oof_scores = {name: numpy.full(len(y), numpy.nan) for name in models}
+        # Manually compute ROC AUC (general/specific) on test set to avoid leakage
         with time_block("auc_loop_total", n_folds=5, n_models=len(models)):
             for fold_idx, (train_idx, test_idx) in enumerate(cv.split(X, y, groups)):
                 X_train, X_test = X[train_idx], X[test_idx]
@@ -446,6 +449,7 @@ def main():
 
                 test_propofol = propofol_mask[test_idx]
                 test_sevo = sevoflurane_mask[test_idx]
+                test_volunteers = volunteer_mask[test_idx]
                 for name, model in models.items():
                     with time_block("cv_fold", fold=fold_idx, model=name):
                         model.fit(X_train, y_train)
@@ -463,13 +467,19 @@ def main():
                         y_score_prop = y_score[test_propofol]
                         y_test_sevo = y_test[test_sevo]
                         y_score_sevo = y_score[test_sevo]
+                        y_test_volunteers = y_test[test_volunteers]
+                        y_score_volunteers = y_score[test_volunteers]
 
                         auc_prop = roc_auc_score(y_test_prop, y_score_prop)
                         auc_median_propofol[name].append(auc_prop)
                         auc_sevo = roc_auc_score(y_test_sevo, y_score_sevo)
                         auc_median_sevo[name].append(auc_sevo)
+                        auc_vol = roc_auc_score(y_test_volunteers, y_score_volunteers)
+                        auc_volunteers[name].append(auc_vol)
 
         auc_results = {}
+        for name, scores in auc_volunteers.items():
+            print(f"\n{name}: window-level median volunteer AUC = {numpy.median(scores):.4f}")
         for name, scores in auc_median_propofol.items():
             print(f"\n{name}: window-level median prop AUC = {numpy.median(scores):.4f}")
         for name, scores in auc_median_sevo.items():
