@@ -9,7 +9,8 @@ from sklearn.model_selection import cross_val_score, GroupKFold
 import complexity_calculations as eeg
 from sklearn.preprocessing import PowerTransformer
 from sklearn.metrics import roc_auc_score
-from scipy.stats import loguniform
+from scipy.stats import loguniform, gaussian_kde
+from matplotlib.colors import to_rgb, LinearSegmentedColormap
 from sklearn.model_selection import RandomizedSearchCV
 from joblib import Parallel, delayed
 import argparse
@@ -405,6 +406,140 @@ def tuning_svm(X, y, groups, gpu=False):
     return search.best_estimator_
 
 
+C_COLOR = "#c44e52"  # Conscious (red)
+U_COLOR = "#4c72b0"  # Unconscious (blue)
+
+
+def _univariate_separation(df):
+    """Per-feature univariate AUC (max(AUC, 1-AUC)), highest first.
+
+    Used to choose the two most discriminative features for the joint plot and
+    to order the per-feature panel.
+    """
+    y = df["label"].values
+    scores = {}
+    for f in FEATURE_COLS:
+        v = df[f].values
+        if numpy.std(v) == 0:
+            scores[f] = 0.5
+            continue
+        a = roc_auc_score(y, v)
+        scores[f] = max(a, 1 - a)
+    return sorted(FEATURE_COLS, key=lambda f: scores[f], reverse=True), scores
+
+
+def _clipped_range(v, lo=1, hi=99, pad=0.05):
+    a, b = numpy.percentile(v, [lo, hi])
+    m = (b - a) * pad
+    return a - m, b + m
+
+
+def _kde_contours(ax, x, y, xs, ys, color):
+    """Density contours of (x, y): a transparent->color gradient fill (so
+    low-density regions stay clear instead of washing out the whole panel),
+    plus line contours.
+    """
+    try:
+        k = gaussian_kde(numpy.vstack([x, y]))
+    except numpy.linalg.LinAlgError:
+        return
+    XX, YY = numpy.meshgrid(xs, ys)
+    ZZ = k(numpy.vstack([XX.ravel(), YY.ravel()])).reshape(XX.shape)
+    rgb = to_rgb(color)
+    cmap = LinearSegmentedColormap.from_list("", [(*rgb, 0.0), (*rgb, 0.55)])
+    # Start fills above ~7% of peak density so the background stays white.
+    levels = numpy.linspace(ZZ.max() * 0.07, ZZ.max(), 7)
+    ax.contourf(XX, YY, ZZ, levels=levels, cmap=cmap, extend="max")
+    ax.contour(XX, YY, ZZ, levels=levels, colors=[color], linewidths=0.8, alpha=0.85)
+
+
+def plot_feature_overview(df, subtitle=""):
+    """Cleaner replacement for the dense 3D scatter.
+
+    Two panels: (1) per-class 2D density contours on the two most discriminative
+    features with marginal densities — overplotting-free and unaffected by class
+    imbalance since each class density is self-normalized; (2) split violins of
+    every (z-scored) feature by state, ordered by univariate separability.
+    """
+    order, uni = _univariate_separation(df)
+    fx, fy = order[0], order[1]
+    is_c = df["label"].values == 1
+
+    fig = plt.figure(figsize=(11, 10))
+    outer = fig.add_gridspec(2, 1, height_ratios=[3.2, 1.5], hspace=0.3)
+
+    # --- (1) joint density with marginals ---
+    jb = outer[0].subgridspec(
+        2, 2, width_ratios=(4, 1), height_ratios=(1, 4), wspace=0.04, hspace=0.04
+    )
+    ax = fig.add_subplot(jb[1, 0])
+    ax_top = fig.add_subplot(jb[0, 0], sharex=ax)
+    ax_right = fig.add_subplot(jb[1, 1], sharey=ax)
+
+    xv, yv = df[fx].values, df[fy].values
+    x0, x1 = _clipped_range(xv)
+    y0, y1 = _clipped_range(yv)
+    xs = numpy.linspace(x0, x1, 120)
+    ys = numpy.linspace(y0, y1, 120)
+
+    for mask, color, label in [
+        (is_c, C_COLOR, "Conscious"),
+        (~is_c, U_COLOR, "Unconscious"),
+    ]:
+        _kde_contours(ax, xv[mask], yv[mask], xs, ys, color)
+        kx = gaussian_kde(xv[mask])
+        ax_top.fill_between(xs, kx(xs), color=color, alpha=0.4)
+        ax_top.plot(xs, kx(xs), color=color, lw=1.2)
+        ky = gaussian_kde(yv[mask])
+        ax_right.fill_betweenx(ys, ky(ys), color=color, alpha=0.4)
+        ax_right.plot(ky(ys), ys, color=color, lw=1.2)
+        ax.plot([], [], color=color, lw=6, alpha=0.5, label=label)
+
+    ax.set_xlim(x0, x1)
+    ax.set_ylim(y0, y1)
+    ax.set_xlabel(f"{fx}  (univariate AUC {uni[fx]:.2f})")
+    ax.set_ylabel(f"{fy}  (univariate AUC {uni[fy]:.2f})")
+    ax.legend(loc="upper right", frameon=True)
+    ax_top.axis("off")
+    ax_right.axis("off")
+
+    # --- (2) per-feature split violins (z-scored) ---
+    axv = fig.add_subplot(outer[1])
+    Z = (df[order] - df[order].mean()) / df[order].std()
+    for i, feat in enumerate(order):
+        for mask, color, side in [(is_c, C_COLOR, -1), (~is_c, U_COLOR, 1)]:
+            vp = axv.violinplot(
+                Z[feat].values[mask], positions=[i], widths=0.8,
+                showmedians=True, showextrema=False,
+            )
+            for b in vp["bodies"]:
+                verts = b.get_paths()[0].vertices
+                verts[:, 0] = (
+                    numpy.clip(verts[:, 0], i, numpy.inf)
+                    if side > 0
+                    else numpy.clip(verts[:, 0], -numpy.inf, i)
+                )
+                b.set_facecolor(color)
+                b.set_alpha(0.6)
+                b.set_edgecolor("none")
+            vp["cmedians"].set_color(color)
+    axv.set_xticks(range(len(order)))
+    axv.set_xticklabels(order, rotation=30, ha="right", fontsize=8)
+    axv.set_ylabel("z-score")
+    axv.set_ylim(-4, 4)
+    axv.axhline(0, color="0.7", lw=0.8, zorder=0)
+    axv.plot([], [], color=C_COLOR, lw=6, alpha=0.6, label="Conscious (left)")
+    axv.plot([], [], color=U_COLOR, lw=6, alpha=0.6, label="Unconscious (right)")
+    axv.legend(loc="upper right", fontsize=8)
+    axv.set_title("Per-feature distributions by state (ordered by univariate AUC)")
+
+    title = "Conscious vs Unconscious — feature density"
+    if subtitle:
+        title += f"\n{subtitle}"
+    fig.suptitle(title, fontsize=14)
+    fig.subplots_adjust(top=0.92)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -512,61 +647,13 @@ def main():
             )
 
         with time_block("plot_build"):
-            fig, axes = plt.subplots(
-                1,
-                len(models),
-                figsize=(8 * len(models), 7),
-                subplot_kw={"projection": "3d"},
-                squeeze=False,
+            name = next(iter(models))
+            cv_scores = cv_scores_per_model[name]
+            subtitle = (
+                f"{name} \u2014 CV accuracy {cv_scores.mean():.1%} "
+                f"(+/- {cv_scores.std():.1%}), mean AUC {auc_results[name]:.3f}"
             )
-            axes = axes.ravel()
-
-            for ax, (name, model) in zip(axes, models.items()):
-                cv_scores = cv_scores_per_model[name]
-                model.fit(X, y)
-
-                is_outlier = df["n_samples"] <= OUTLIER_THRESHOLD
-
-                for state, color, marker in [
-                    ("Conscious", "red", "o"),
-                    ("Unconscious", "blue", "x"),
-                ]:
-                    subset = df[df["state"] == state]
-                    ok = subset[~is_outlier[subset.index]]
-                    short = subset[is_outlier[subset.index]]
-
-                    ax.scatter(
-                        ok["K"],
-                        ok["LZ"],
-                        ok["log_ratio"],
-                        color=color,
-                        label=state,
-                        marker=marker,
-                        edgecolor="k" if marker == "o" else color,
-                        s=50,
-                    )
-                    if not short.empty:
-                        ax.scatter(
-                            short["K"],
-                            short["LZ"],
-                            short["log_ratio"],
-                            color="yellow",
-                            label=f"{state} (n\u2264{OUTLIER_THRESHOLD})",
-                            marker=marker,
-                            edgecolor=color,
-                            s=50,
-                        )
-
-                ax.set_xlabel("Median K (Chaos)")
-                ax.set_ylabel("Lempel-Ziv Complexity")
-                ax.set_zlabel("log(Delta/Alpha)")
-                ax.set_title(
-                    f"{name}\n3D CV Accuracy: {cv_scores.mean():.2%} (+/- {cv_scores.std():.2%})\nMean AUC: {auc_results[name]:.4f}"
-                )
-                ax.legend(fontsize="x-small", loc="upper left")
-
-            plt.suptitle("3D Classification (K, LZ, log(Delta/Alpha))", fontsize=16)
-            plt.tight_layout(rect=[0, 0, 1, 0.96])
+            plot_feature_overview(df, subtitle)
 
     plt.show()
 
