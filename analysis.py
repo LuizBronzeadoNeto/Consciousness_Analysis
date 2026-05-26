@@ -453,23 +453,19 @@ def _kde_contours(ax, x, y, xs, ys, color):
     ax.contour(XX, YY, ZZ, levels=levels, colors=[color], linewidths=0.8, alpha=0.85)
 
 
-def plot_feature_overview(df, subtitle=""):
+def plot_feature_overview(df, subtitle="", fx="K", fy="LZ"):
     """Cleaner replacement for the dense 3D scatter.
 
-    Two panels: (1) per-class 2D density contours on the two most discriminative
-    features with marginal densities — overplotting-free and unaffected by class
-    imbalance since each class density is self-normalized; (2) split violins of
-    every (z-scored) feature by state, ordered by univariate separability.
+    Per-class 2D density contours on two features (default: the complexity
+    primitives K and LZ) with marginal densities — overplotting-free and
+    unaffected by class imbalance since each class density is self-normalized —
+    over the decision boundary of an RBF-SVM fit on those two features.
     """
-    order, uni = _univariate_separation(df)
-    fx, fy = order[0], order[1]
+    _, uni = _univariate_separation(df)
     is_c = df["label"].values == 1
 
-    fig = plt.figure(figsize=(11, 10))
-    outer = fig.add_gridspec(2, 1, height_ratios=[3.2, 1.5], hspace=0.3)
-
-    # --- (1) joint density with marginals ---
-    jb = outer[0].subgridspec(
+    fig = plt.figure(figsize=(8.5, 8))
+    jb = fig.add_gridspec(
         2, 2, width_ratios=(4, 1), height_ratios=(1, 4), wspace=0.04, hspace=0.04
     )
     ax = fig.add_subplot(jb[1, 0])
@@ -479,8 +475,23 @@ def plot_feature_overview(df, subtitle=""):
     xv, yv = df[fx].values, df[fy].values
     x0, x1 = _clipped_range(xv)
     y0, y1 = _clipped_range(yv)
-    xs = numpy.linspace(x0, x1, 120)
-    ys = numpy.linspace(y0, y1, 120)
+    xs = numpy.linspace(x0, x1, 200)
+    ys = numpy.linspace(y0, y1, 200)
+
+    # Decision boundary of an RBF-SVM trained on *only* these two features — a 2D
+    # view of the classifier (the production model uses all 8 features, so its
+    # true boundary lives in 8D and can't be drawn here). Shaded regions show the
+    # predicted class; the dashed line is the decision_function == 0 contour.
+    XX, YY = numpy.meshgrid(xs, ys)
+    grid = numpy.column_stack([XX.ravel(), YY.ravel()])
+    disp_clf = make_pipeline(
+        PowerTransformer(method="yeo-johnson", standardize=True),
+        SVC(kernel="rbf", class_weight="balanced", gamma="scale", C=10.0),
+    ).fit(df[[fx, fy]].values, df["label"].values)
+    ZZc = disp_clf.decision_function(grid).reshape(XX.shape)
+    ax.contourf(XX, YY, ZZc, levels=[-1e18, 0, 1e18], colors=[U_COLOR, C_COLOR], alpha=0.08)
+    ax.contour(XX, YY, ZZc, levels=[0], colors="k", linewidths=1.5, linestyles="--")
+    ax.plot([], [], "k--", lw=1.5, label="SVM boundary (2-feature)")
 
     for mask, color, label in [
         (is_c, C_COLOR, "Conscious"),
@@ -502,36 +513,6 @@ def plot_feature_overview(df, subtitle=""):
     ax.legend(loc="upper right", frameon=True)
     ax_top.axis("off")
     ax_right.axis("off")
-
-    # --- (2) per-feature split violins (z-scored) ---
-    axv = fig.add_subplot(outer[1])
-    Z = (df[order] - df[order].mean()) / df[order].std()
-    for i, feat in enumerate(order):
-        for mask, color, side in [(is_c, C_COLOR, -1), (~is_c, U_COLOR, 1)]:
-            vp = axv.violinplot(
-                Z[feat].values[mask], positions=[i], widths=0.8,
-                showmedians=True, showextrema=False,
-            )
-            for b in vp["bodies"]:
-                verts = b.get_paths()[0].vertices
-                verts[:, 0] = (
-                    numpy.clip(verts[:, 0], i, numpy.inf)
-                    if side > 0
-                    else numpy.clip(verts[:, 0], -numpy.inf, i)
-                )
-                b.set_facecolor(color)
-                b.set_alpha(0.6)
-                b.set_edgecolor("none")
-            vp["cmedians"].set_color(color)
-    axv.set_xticks(range(len(order)))
-    axv.set_xticklabels(order, rotation=30, ha="right", fontsize=8)
-    axv.set_ylabel("z-score")
-    axv.set_ylim(-4, 4)
-    axv.axhline(0, color="0.7", lw=0.8, zorder=0)
-    axv.plot([], [], color=C_COLOR, lw=6, alpha=0.6, label="Conscious (left)")
-    axv.plot([], [], color=U_COLOR, lw=6, alpha=0.6, label="Unconscious (right)")
-    axv.legend(loc="upper right", fontsize=8)
-    axv.set_title("Per-feature distributions by state (ordered by univariate AUC)")
 
     title = "Conscious vs Unconscious — feature density"
     if subtitle:
