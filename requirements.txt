@@ -2,3 +2,8 @@ numpy
 pandas
 matplotlib
 numba
+scikit-learn
+scipy
+joblib
+pyyaml
+pyarrow
