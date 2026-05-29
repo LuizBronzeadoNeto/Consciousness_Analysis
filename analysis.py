@@ -8,8 +8,8 @@ from sklearn.pipeline import make_pipeline
 from sklearn.model_selection import cross_val_score, GroupKFold
 import complexity_calculations as eeg
 from sklearn.preprocessing import PowerTransformer
-from sklearn.metrics import roc_auc_score
-from scipy.stats import loguniform, gaussian_kde
+from sklearn.metrics import roc_auc_score, roc_curve
+from scipy.stats import loguniform, gaussian_kde, norm
 from matplotlib.colors import to_rgb, LinearSegmentedColormap
 from sklearn.model_selection import RandomizedSearchCV
 from joblib import Parallel, delayed
@@ -489,7 +489,9 @@ def plot_feature_overview(df, subtitle="", fx="K", fy="LZ"):
         SVC(kernel="rbf", class_weight="balanced", gamma="scale", C=10.0),
     ).fit(df[[fx, fy]].values, df["label"].values)
     ZZc = disp_clf.decision_function(grid).reshape(XX.shape)
-    ax.contourf(XX, YY, ZZc, levels=[-1e18, 0, 1e18], colors=[U_COLOR, C_COLOR], alpha=0.08)
+    ax.contourf(
+        XX, YY, ZZc, levels=[-1e18, 0, 1e18], colors=[U_COLOR, C_COLOR], alpha=0.08
+    )
     ax.contour(XX, YY, ZZc, levels=[0], colors="k", linewidths=1.5, linestyles="--")
     ax.plot([], [], "k--", lw=1.5, label="SVM boundary (2-feature)")
 
@@ -519,6 +521,119 @@ def plot_feature_overview(df, subtitle="", fx="K", fy="LZ"):
         title += f"\n{subtitle}"
     fig.suptitle(title, fontsize=14)
     fig.subplots_adjust(top=0.92)
+
+
+def _bca_ci(boot_thetas, jack_thetas, theta_hat, alpha=0.05):
+    """Bias-corrected and accelerated (BCa) bootstrap interval."""
+    boot = numpy.asarray(boot_thetas, dtype=float)
+    boot = boot[numpy.isfinite(boot)]
+    if len(boot) < 10 or not numpy.isfinite(theta_hat):
+        return float("nan"), float("nan")
+    frac_lt = float(numpy.mean(boot < theta_hat))
+    frac_lt = min(max(frac_lt, 1e-6), 1 - 1e-6)
+    z0 = norm.ppf(frac_lt)
+
+    jack = numpy.asarray(jack_thetas, dtype=float)
+    jack = jack[numpy.isfinite(jack)]
+    if len(jack) < 3:
+        a = 0.0
+    else:
+        jm = jack.mean()
+        num = ((jm - jack) ** 3).sum()
+        den = 6.0 * (((jm - jack) ** 2).sum() ** 1.5)
+        a = float(num / den) if den != 0 else 0.0
+
+    za_lo = norm.ppf(alpha / 2)
+    za_hi = norm.ppf(1 - alpha / 2)
+    a1 = norm.cdf(z0 + (z0 + za_lo) / (1 - a * (z0 + za_lo)))
+    a2 = norm.cdf(z0 + (z0 + za_hi) / (1 - a * (z0 + za_hi)))
+    a1 = min(max(a1, 0.0), 1.0)
+    a2 = min(max(a2, 0.0), 1.0)
+    return float(numpy.quantile(boot, a1)), float(numpy.quantile(boot, a2))
+
+
+def _auc_with_ci(y, score, groups, n_boot=2000, seed=42):
+    """Pooled ROC-AUC plus a case-level cluster-bootstrap BCa 95% CI."""
+    y = numpy.asarray(y)
+    score = numpy.asarray(score)
+    groups = numpy.asarray(groups)
+
+    def _auc(yt, ys):
+        if len(numpy.unique(yt)) < 2:
+            return float("nan")
+        return roc_auc_score(yt, ys)
+
+    theta_hat = _auc(y, score)
+
+    unique = numpy.unique(groups)
+    case_rows = {c: numpy.flatnonzero(groups == c) for c in unique}
+    rng = numpy.random.default_rng(seed)
+
+    boots = numpy.empty(n_boot)
+    for b in range(n_boot):
+        sample = rng.choice(unique, size=len(unique), replace=True)
+        rows = numpy.concatenate([case_rows[c] for c in sample])
+        boots[b] = _auc(y[rows], score[rows])
+
+    jacks = numpy.empty(len(unique))
+    for i, c in enumerate(unique):
+        rows = numpy.concatenate([case_rows[cc] for cc in unique if cc != c])
+        jacks[i] = _auc(y[rows], score[rows])
+
+    lo, hi = _bca_ci(boots, jacks, theta_hat)
+    return theta_hat, lo, hi
+
+
+def plot_roc_overview(y, oof, slices, agg):
+    """Compact ROC panel on the model's pooled out-of-fold predictions."""
+    y = numpy.asarray(y)
+    oof = numpy.asarray(oof)
+
+    fig, ax = plt.subplots(figsize=(5.4, 5.2))
+    summary = []
+
+    case_auc, case_lo, case_hi = _auc_with_ci(
+        agg["label"].values, agg["score"].values, agg["case"].values
+    )
+    fpr, tpr, _ = roc_curve(agg["label"].values, agg["score"].values)
+    ax.plot(
+        fpr,
+        tpr,
+        color="black",
+        lw=2.4,
+        linestyle="--",
+        zorder=5,
+        label=f"Case-level (aggregated) - {case_auc:.2f} [{case_lo:.2f}, {case_hi:.2f}]",
+    )
+    summary.append(("case-level", case_auc, case_lo, case_hi))
+
+    for label, mask, color, groups, style in slices:
+        m = numpy.asarray(mask, dtype=bool)
+        if m.sum() == 0 or len(numpy.unique(y[m])) < 2:
+            continue
+        auc, lo, hi = _auc_with_ci(y[m], oof[m], numpy.asarray(groups)[m])
+        fpr, tpr, _ = roc_curve(y[m], oof[m])
+        ax.plot(
+            fpr,
+            tpr,
+            color=color,
+            label=f"{label} - {auc:.2f} [{lo:.2f}, {hi:.2f}]",
+            **style,
+        )
+        summary.append((label, auc, lo, hi))
+
+    ax.plot(
+        [0, 1], [0, 1], color="grey", lw=1.0, linestyle=":", zorder=0, label="chance"
+    )
+    ax.set_xlim(-0.01, 1.01)
+    ax.set_ylim(-0.01, 1.01)
+    ax.set_aspect("equal")
+    ax.set_xlabel("False positive rate")
+    ax.set_ylabel("True positive rate")
+    ax.set_title("Conscious vs Unconscious - ROC (pooled out-of-fold)")
+    ax.legend(loc="lower right", frameon=True, fontsize=7.5, handlelength=1.6)
+    fig.tight_layout()
+    return summary
 
 
 def main():
@@ -595,11 +710,17 @@ def main():
 
         auc_results = {}
         for name, scores in auc_volunteers.items():
-            print(f"\n{name}: window-level median volunteer AUC = {numpy.median(scores):.4f}")
+            print(
+                f"\n{name}: window-level median volunteer AUC = {numpy.median(scores):.4f}"
+            )
         for name, scores in auc_median_propofol.items():
-            print(f"\n{name}: window-level median prop AUC = {numpy.median(scores):.4f}")
+            print(
+                f"\n{name}: window-level median prop AUC = {numpy.median(scores):.4f}"
+            )
         for name, scores in auc_median_sevo.items():
-            print(f"\n{name}: window-level median sevo AUC = {numpy.median(scores):.4f}")
+            print(
+                f"\n{name}: window-level median sevo AUC = {numpy.median(scores):.4f}"
+            )
         for name, scores in auc_scores.items():
             print(f"\n{name}: window-level median AUC = {numpy.median(scores):.4f}")
             auc_results[name] = sum(scores) / len(scores)
@@ -629,12 +750,49 @@ def main():
 
         with time_block("plot_build"):
             name = next(iter(models))
-            cv_scores = cv_scores_per_model[name]
-            subtitle = (
-                f"{name} \u2014 CV accuracy {cv_scores.mean():.1%} "
-                f"(+/- {cv_scores.std():.1%}), mean AUC {auc_results[name]:.3f}"
+            oof = oof_scores[name]
+            agg = (
+                df.assign(score=oof)
+                .groupby(["case", "state"], as_index=False)
+                .agg(score=("score", "mean"), label=("label", "first"))
             )
-            plot_feature_overview(df, subtitle)
+            overall_mask = numpy.ones(len(y), dtype=bool)
+            slices = [
+                (
+                    "Overall (window)",
+                    overall_mask,
+                    "#7f7f7f",
+                    groups,
+                    dict(lw=1.3, alpha=0.5, zorder=1),
+                ),
+                (
+                    "Propofol (window)",
+                    propofol_mask.values,
+                    "#4c72b0",
+                    groups,
+                    dict(lw=1.9, zorder=3),
+                ),
+                (
+                    "Sevoflurane (window)",
+                    sevoflurane_mask.values,
+                    "#c44e52",
+                    groups,
+                    dict(lw=1.9, zorder=3),
+                ),
+            ]
+            roc_summary = plot_roc_overview(y, oof, slices, agg)
+
+            for label, auc, lo, hi in roc_summary:
+                print(
+                    f"\n{name}: pooled-OOF {label.lower()} AUC = {auc:.4f} "
+                    f"[{lo:.4f}, {hi:.4f}]"
+                )
+
+            img_dir = os.path.join(_REPO_ROOT, "images")
+            os.makedirs(img_dir, exist_ok=True)
+            fig_path = os.path.join(img_dir, "roc_performance.png")
+            plt.savefig(fig_path, dpi=300, bbox_inches="tight")
+            print(f"Saved ROC figure to {fig_path}")
 
     plt.show()
 
