@@ -383,6 +383,7 @@ def _plot_slice(curves, res, model_names, slice_key, out_name):
 
 def _plot(curves, res, model_names):
     _plot_auc_by_cohort(res, model_names, "abel_comparison.svg")
+    _plot_slice(curves, res, model_names, "overall", "abel_comparison_overall.svg")
     _plot_slice(curves, res, model_names, "propofol", "abel_comparison_propofol.svg")
     _plot_slice(curves, res, model_names, "volunteers", "abel_comparison_volunteers.svg")
 
