@@ -371,6 +371,8 @@ def _plot_slice(curves, res, model_names, slice_key, out_name):
     ax.set_xlim(-0.01, 1.01)
     ax.set_ylim(-0.01, 1.01)
     ax.set_aspect("equal")
+    ax.set_axisbelow(True)
+    ax.grid(True, color="0.85", lw=0.6)
     ax.set_xlabel("False positive rate")
     ax.set_ylabel("True positive rate")
     ax.set_title(f"ROC - {SLICE_LABEL[slice_key]} (pooled OOF)")
