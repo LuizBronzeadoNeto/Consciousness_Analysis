@@ -30,10 +30,91 @@ def lz_fast(binary):
                 k = 1
     return c * numpy.log2(n) / n
 
+import numpy as np
+
+def encode_eeg_to_trace(signal):
+    """
+    janela o sinal de EEG contínuo em uma string baseada na amplitude
+    e na variação (derivada discreta) entre pontos.
+    """
+    # diferença para saber se está crescendo ou decrescendo
+    diff = np.insert(np.diff(signal), 0, 0)
+    
+    signal_clipped = np.clip(signal, -10, 40)
+    
+    encoded = []
+    for v, d in zip(signal_clipped, diff):
+        if d >= 0:  # Crescendo ou estável
+            if   -10 <= v < 0:  encoded.append('A')
+            elif   0 <= v < 10: encoded.append('B')
+            elif  10 <= v < 20: encoded.append('C')
+            elif  20 <= v < 30: encoded.append('D')
+            else:               encoded.append('E') 
+        else:       # Decrescendo
+            if    30 < v <= 40: encoded.append('F')
+            elif  20 < v <= 30: encoded.append('G')
+            elif  10 < v <= 20: encoded.append('H')
+            elif   0 < v <= 10: encoded.append('I')
+            else:               encoded.append('J') 
+            
+    return "".join(encoded)
+
+def normalize_trace(s):
+    """
+    Normaliza a string para a forma canônica do monóide de traços.
+    Comutatividades assumidas: AJ=JA, BI=IB, CH=HC, DG=GD, EF=FE.
+    Como os pares são disjuntos, basta ordenar as ocorrências invertidas.
+    """
+    prev_s = ""
+    while s != prev_s:
+        prev_s = s
+        s = s.replace('JA', 'AJ')
+        s = s.replace('IB', 'BI')
+        s = s.replace('HC', 'CH')
+        s = s.replace('GD', 'DG')
+        s = s.replace('FE', 'EF')
+    return s
+
+def polz_compress(encoded_string):
+    """
+    encoded_string: é o ômega, a string completa
+    """
+    dictionary = set() # D
+    w = ""             # buffer tau τ
+    c = 0              # contador
+    
+    for symbol in encoded_string:   # symbol é o sigma
+
+        # juntamos o buffer com a letra nova (τ + σ)
+        # normalize_trace --> relação de Independência (I)
+        candidate = normalize_trace(w + symbol)
+        
+        if candidate in dictionary:
+            w = candidate
+        else:
+            dictionary.add(candidate)
+            c += 1
+            w = ""
+            
+    # se o buffer acabar e ainda tiver algo no buffer
+    if w != "":
+        c += 1
+        
+    return c
+
 def lempel_ziv_complexity(signal):
-    median = numpy.median(signal)
-    binary = (signal > median).astype(numpy.int8)
-    return lz_fast(binary)
+    """
+    função principal
+    """
+    encoded_string = encode_eeg_to_trace(signal)
+    
+    n = len(encoded_string)
+    if n == 0:
+        return 0.0
+        
+    c = polz_compress(encoded_string)
+    
+    return c * np.log2(n) / n
 
 def _chaos_batch(signal, cs):
     signal = numpy.asarray(signal, dtype=numpy.float64)
