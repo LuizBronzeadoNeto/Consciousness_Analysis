@@ -44,13 +44,13 @@ def encode_eeg_to_trace(signal):
     
     encoded = []
     for v, d in zip(signal_clipped, diff):
-        if d >= 0:  # Crescendo ou estável
+        if d >= 0:  
             if   -10 <= v < 0:  encoded.append('A')
             elif   0 <= v < 10: encoded.append('B')
             elif  10 <= v < 20: encoded.append('C')
             elif  20 <= v < 30: encoded.append('D')
             else:               encoded.append('E') 
-        else:       # Decrescendo
+        else:       
             if    30 < v <= 40: encoded.append('F')
             elif  20 < v <= 30: encoded.append('G')
             elif  10 < v <= 20: encoded.append('H')
