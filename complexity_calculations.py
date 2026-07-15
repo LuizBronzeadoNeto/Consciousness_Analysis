@@ -32,63 +32,58 @@ def lz_fast(binary):
 
 import numpy as np
 
-def encode_eeg_to_trace(signal):
+ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"
+
+def encode_eeg_dynamic(signal, n_symbols):
     """
-    janela o sinal de EEG contínuo em uma string baseada na amplitude
-    e na variação (derivada discreta) entre pontos.
+    Janela o sinal dinamicamente usando N símbolos (n_symbols deve ser par).
+    Suporta até 36 símbolos através da string ALPHABET.
     """
-    # diferença para saber se está crescendo ou decrescendo
+    n_bins = n_symbols // 2
     diff = np.insert(np.diff(signal), 0, 0)
-    
     signal_clipped = np.clip(signal, -10, 40)
+    
+    bins = np.linspace(-10, 40, n_bins + 1)
     
     encoded = []
     for v, d in zip(signal_clipped, diff):
+        idx = np.digitize(v, bins) - 1
+        idx = min(max(idx, 0), n_bins - 1)
+        
         if d >= 0:  
-            if   -10 <= v < 0:  encoded.append('A')
-            elif   0 <= v < 10: encoded.append('B')
-            elif  10 <= v < 20: encoded.append('C')
-            elif  20 <= v < 30: encoded.append('D')
-            else:               encoded.append('E') 
+            encoded.append(ALPHABET[idx]) 
         else:       
-            if    30 < v <= 40: encoded.append('F')
-            elif  20 < v <= 30: encoded.append('G')
-            elif  10 < v <= 20: encoded.append('H')
-            elif   0 < v <= 10: encoded.append('I')
-            else:               encoded.append('J') 
+            neg_idx = (n_bins - 1) - idx
+            encoded.append(ALPHABET[n_bins + neg_idx])
             
     return "".join(encoded)
 
-def normalize_trace(s):
+def normalize_trace_dynamic(s, n_symbols):
     """
-    Normaliza a string para a forma canônica do monóide de traços.
-    Comutatividades assumidas: AJ=JA, BI=IB, CH=HC, DG=GD, EF=FE.
-    Como os pares são disjuntos, basta ordenar as ocorrências invertidas.
+    Gera as regras de comutatividade dinamicamente e as aplica.
     """
+    n_bins = n_symbols // 2
     prev_s = ""
+    
+    pairs = []
+    for i in range(n_bins):
+        sym_pos = ALPHABET[i]
+        sym_neg = ALPHABET[(2 * n_bins - 1) - i]
+        pairs.append((sym_neg + sym_pos, sym_pos + sym_neg))
+        
     while s != prev_s:
         prev_s = s
-        s = s.replace('JA', 'AJ')
-        s = s.replace('IB', 'BI')
-        s = s.replace('HC', 'CH')
-        s = s.replace('GD', 'DG')
-        s = s.replace('FE', 'EF')
+        for p_in, p_out in pairs:
+            s = s.replace(p_in, p_out)
     return s
 
-def polz_compress(encoded_string):
-    """
-    encoded_string: é o ômega, a string completa
-    """
-    dictionary = set() # D
-    w = ""             # buffer tau τ
-    c = 0              # contador
+def polz_compress_dynamic(encoded_string, n_symbols):
+    dictionary = set() 
+    w = ""             
+    c = 0              
     
-    for symbol in encoded_string:   # symbol é o sigma
-
-        # juntamos o buffer com a letra nova (τ + σ)
-        # normalize_trace --> relação de Independência (I)
-        candidate = normalize_trace(w + symbol)
-        
+    for symbol in encoded_string:   
+        candidate = normalize_trace_dynamic(w + symbol, n_symbols)
         if candidate in dictionary:
             w = candidate
         else:
@@ -96,24 +91,27 @@ def polz_compress(encoded_string):
             c += 1
             w = ""
             
-    # se o buffer acabar e ainda tiver algo no buffer
     if w != "":
         c += 1
         
     return c
 
-def lempel_ziv_complexity(signal):
-    """
-    função principal
-    """
-    encoded_string = encode_eeg_to_trace(signal)
-    
+def polz_complexity(signal, n_symbols):
+    encoded_string = encode_eeg_dynamic(signal, n_symbols)
     n = len(encoded_string)
     if n == 0:
         return 0.0
-        
-    c = polz_compress(encoded_string)
-    
+    c = polz_compress_dynamic(encoded_string, n_symbols)
+    return c * np.log2(n) / n
+
+def lz_classic_binary(signal):
+    """Lempel-Ziv clássico baseado na binarização pela mediana."""
+    med = np.median(signal)
+    binary = (signal >= med).astype(np.int8)
+    n = len(binary)
+    if n == 0:
+        return 0.0
+    c = lz_fast(binary)
     return c * np.log2(n) / n
 
 def _chaos_batch(signal, cs):

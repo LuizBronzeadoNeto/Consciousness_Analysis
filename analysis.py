@@ -28,7 +28,11 @@ WINDOW_STRIDE = 15
 QUALITY_MIN_FRAC = 0.8
 FEATURE_COLS = [
     "K",
-    "LZ",
+    "LZ_Classic",
+    "POLZ_4",
+    "POLZ_8",
+    "POLZ_16",
+    "POLZ_32", # <-- NOVA LINHA
     "log_ratio",
     "log_alpha_var",
     "log_theta",
@@ -227,7 +231,11 @@ def _process_one_case(filepath):
             with _collect_block(
                 perf_records, "epoch_metrics", case=case_id, epoch_id=i
             ):
-                LZ = eeg.lempel_ziv_complexity(alpha_win)
+                LZ_classic = eeg.lz_classic_binary(alpha_win)
+                POLZ_4 = eeg.polz_complexity(alpha_win, 4)
+                POLZ_8 = eeg.polz_complexity(alpha_win, 8)
+                POLZ_16 = eeg.polz_complexity(alpha_win, 16)
+                POLZ_32 = eeg.polz_complexity(alpha_win, 32) 
                 K = eeg.median_K(alpha_win)
                 alpha_mean = numpy.mean(alpha_win)
                 delta_mean = numpy.mean(delta_win)
@@ -248,7 +256,11 @@ def _process_one_case(filepath):
                         "state": "Conscious" if lab_win[0] == 1 else "Unconscious",
                         "epoch_number": i,
                         "K": K,
-                        "LZ": LZ,
+                        "LZ_Classic": LZ_classic,
+                        "POLZ_4": POLZ_4,
+                        "POLZ_8": POLZ_8,
+                        "POLZ_16": POLZ_16,
+                        "POLZ_32": POLZ_32,
                         "log_ratio": log_ratio,
                         "log_alpha_var": log_alpha_var,
                         "log_theta": float(numpy.log(theta[sl].mean() + 1e-12)),
@@ -646,156 +658,179 @@ def main():
     args = parser.parse_args()
 
     with time_block("total_run", gpu=args.gpu):
-        X, y, df, groups = load_data()
+        X_full, y, df, groups = load_data()
         cv = GroupKFold(n_splits=5)
-        propofol_mask = df["compound"] == "pure_propofol"
-        sevoflurane_mask = df["compound"].isin(["mixed", "pure_sevo"])
-        volunteer_mask = df["cohort"] != "OR"
+        
+        # Máscaras de filtros para extrair as métricas detalhadas depois
+        propofol_mask = (df["compound"] == "pure_propofol").values
+        sevoflurane_mask = df["compound"].isin(["mixed", "pure_sevo"]).values
 
         print(f"Total samples (lines): {len(df)}")
-        print(f"Total rows (features): {X.shape[1]}")
         print(f"Unique patients: {len(numpy.unique(groups))}")
         print(f"Conscious: {(y == 1).sum()}, Unconscious: {(y == 0).sum()}")
 
-        if args.gpu:
-            X = numpy.ascontiguousarray(X, dtype=numpy.float32)
-            y = numpy.ascontiguousarray(y, dtype=numpy.int32)
+        BASE_FEATURES = [
+            "K", "log_ratio", "log_alpha_var", "log_theta", 
+            "log_beta", "log_gamma", "spectral_entropy"
+        ]
 
-        svm_tuned = tuning_svm(X, y, groups, gpu=args.gpu)
-
-        models = {
-            "SVM (Randomized Search/Optimized)": svm_tuned,
+        methodologies = {
+            "SVM + Clássico (2)": ["LZ_Classic"] + BASE_FEATURES,
+            "SVM + POLZ (4)": ["POLZ_4"] + BASE_FEATURES,
+            "SVM + POLZ (8)": ["POLZ_8"] + BASE_FEATURES,
+            "SVM + POLZ (16)": ["POLZ_16"] + BASE_FEATURES,
+            "SVM + POLZ (32)": ["POLZ_32"] + BASE_FEATURES, 
         }
 
+        models = {}
+        for name, features in methodologies.items():
+            print(f"\n--- Otimizando {name} ---")
+            X_sub = df[features].values
+            
+            if args.gpu:
+                X_sub = numpy.ascontiguousarray(X_sub, dtype=numpy.float32)
+                y = numpy.ascontiguousarray(y, dtype=numpy.int32)
+                
+            svm_tuned = tuning_svm(X_sub, y, groups, gpu=args.gpu)
+            models[name] = (svm_tuned, features)
+
         auc_scores = {name: [] for name in models}
-        auc_median_propofol = {name: [] for name in models}
-        auc_median_sevo = {name: [] for name in models}
-        auc_volunteers = {name: [] for name in models}
+        acc_scores = {name: [] for name in models} # Para guardar a acurácia de cada fold
         oof_scores = {name: numpy.full(len(y), numpy.nan) for name in models}
-        # Manually compute ROC AUC (general/specific) on test set to avoid leakage
+
         with time_block("auc_loop_total", n_folds=5, n_models=len(models)):
-            for fold_idx, (train_idx, test_idx) in enumerate(cv.split(X, y, groups)):
-                X_train, X_test = X[train_idx], X[test_idx]
+            for fold_idx, (train_idx, test_idx) in enumerate(cv.split(df, y, groups)):
                 y_train, y_test = y[train_idx], y[test_idx]
 
-                test_propofol = propofol_mask[test_idx]
-                test_sevo = sevoflurane_mask[test_idx]
-                test_volunteers = volunteer_mask[test_idx]
-                for name, model in models.items():
+                for name, (model, features) in models.items():
+                    X_sub = df[features].values
+                    X_train, X_test = X_sub[train_idx], X_sub[test_idx]
+
                     with time_block("cv_fold", fold=fold_idx, model=name):
                         model.fit(X_train, y_train)
+                        
+                        # 1. Pega os Scores (Probabilidade ou Distância da Fronteira) para AUC
                         if hasattr(model, "predict_proba"):
                             y_score = model.predict_proba(X_test)[:, 1]
                         elif hasattr(model, "decision_function"):
                             y_score = model.decision_function(X_test)
-                        else:
-                            raise ValueError(f"{name} has no scoring method")
+                        
+                        # 2. Pega a predição da classe (0 ou 1) para Acurácia
+                        y_pred = model.predict(X_test)
+                            
                         auc = roc_auc_score(y_test, y_score)
+                        acc = (y_test == y_pred).mean() # Cálculo direto de acurácia
+                        
                         auc_scores[name].append(auc)
+                        acc_scores[name].append(acc)
                         oof_scores[name][test_idx] = y_score
 
-                        y_test_prop = y_test[test_propofol]
-                        y_score_prop = y_score[test_propofol]
-                        y_test_sevo = y_test[test_sevo]
-                        y_score_sevo = y_score[test_sevo]
-                        y_test_volunteers = y_test[test_volunteers]
-                        y_score_volunteers = y_score[test_volunteers]
-
-                        auc_prop = roc_auc_score(y_test_prop, y_score_prop)
-                        auc_median_propofol[name].append(auc_prop)
-                        auc_sevo = roc_auc_score(y_test_sevo, y_score_sevo)
-                        auc_median_sevo[name].append(auc_sevo)
-                        auc_vol = roc_auc_score(y_test_volunteers, y_score_volunteers)
-                        auc_volunteers[name].append(auc_vol)
-
-        auc_results = {}
-        for name, scores in auc_volunteers.items():
-            print(
-                f"\n{name}: window-level median volunteer AUC = {numpy.median(scores):.4f}"
-            )
-        for name, scores in auc_median_propofol.items():
-            print(
-                f"\n{name}: window-level median prop AUC = {numpy.median(scores):.4f}"
-            )
-        for name, scores in auc_median_sevo.items():
-            print(
-                f"\n{name}: window-level median sevo AUC = {numpy.median(scores):.4f}"
-            )
-        for name, scores in auc_scores.items():
-            print(f"\n{name}: window-level median AUC = {numpy.median(scores):.4f}")
-            auc_results[name] = sum(scores) / len(scores)
-
+        # --- IMPRESSÃO DOS RESULTADOS DETALHADOS ---
+        print("\n" + "="*70)
+        print("MÉTRICAS DETALHADAS POR METODOLOGIA".center(70))
+        print("="*70)
+        
+        aucs_for_plot = {}
+        for name in models.keys():
+            print(f"\n[ Resultados: {name} ]")
+            
+            # --- CV Accuracy (Média e Desvio Padrão) ---
+            acc_mean = numpy.mean(acc_scores[name]) * 100
+            acc_std = numpy.std(acc_scores[name]) * 100
+            print(f"{name}: 3D CV Accuracy = {acc_mean:.2f}% (+/- {acc_std:.2f}%)")
+            print(f"{name}: window-level median CV AUC = {numpy.median(auc_scores[name]):.4f}")
+            
+            # --- Case-Level AUC ---
             agg = (
                 df.assign(score=oof_scores[name])
                 .groupby(["case", "state"], as_index=False)
                 .agg(score=("score", "mean"), label=("label", "first"))
             )
-            print(
-                f"{name}: case-(state) AUC = {roc_auc_score(agg.label, agg.score):.4f} "
-                f"(n_pairs={len(agg)})"
+            case_auc, case_lo, case_hi = _auc_with_ci(
+                agg["label"].values, agg["score"].values, agg["case"].values
             )
-
-        # Compute CV accuracy once per model — previously computed twice
-        # (here and again inside the plot loop).
-        cv_scores_per_model = {}
-        for name, model in models.items():
-            with time_block("cv_accuracy", model=name):
-                cv_scores_per_model[name] = cross_val_score(
-                    model, X, y, cv=cv, groups=groups
-                )
-            scores = cv_scores_per_model[name]
-            print(
-                f"\n{name}: 3D CV Accuracy = {scores.mean():.2%} (+/- {scores.std():.2%})"
+            print(f"{name}: pooled-OOF case-level AUC = {case_auc:.4f} [{case_lo:.4f}, {case_hi:.4f}]")
+            
+            # --- Overall (Window) AUC ---
+            over_auc, over_lo, over_hi = _auc_with_ci(y, oof_scores[name], groups)
+            print(f"{name}: pooled-OOF overall (window) AUC = {over_auc:.4f} [{over_lo:.4f}, {over_hi:.4f}]")
+            
+            # --- Propofol (Window) AUC ---
+            prop_auc, prop_lo, prop_hi = _auc_with_ci(
+                y[propofol_mask], oof_scores[name][propofol_mask], groups[propofol_mask]
             )
-
-        with time_block("plot_build"):
-            name = next(iter(models))
-            oof = oof_scores[name]
-            agg = (
-                df.assign(score=oof)
-                .groupby(["case", "state"], as_index=False)
-                .agg(score=("score", "mean"), label=("label", "first"))
+            print(f"{name}: pooled-OOF propofol (window) AUC = {prop_auc:.4f} [{prop_lo:.4f}, {prop_hi:.4f}]")
+            
+            # --- Sevoflurane (Window) AUC ---
+            sevo_auc, sevo_lo, sevo_hi = _auc_with_ci(
+                y[sevoflurane_mask], oof_scores[name][sevoflurane_mask], groups[sevoflurane_mask]
             )
-            overall_mask = numpy.ones(len(y), dtype=bool)
-            slices = [
-                (
-                    "Overall (window)",
-                    overall_mask,
-                    "#7f7f7f",
-                    groups,
-                    dict(lw=1.3, alpha=0.5, zorder=1),
-                ),
-                (
-                    "Propofol (window)",
-                    propofol_mask.values,
-                    "#4c72b0",
-                    groups,
-                    dict(lw=1.9, zorder=3),
-                ),
-                (
-                    "Sevoflurane (window)",
-                    sevoflurane_mask.values,
-                    "#c44e52",
-                    groups,
-                    dict(lw=1.9, zorder=3),
-                ),
-            ]
-            roc_summary = plot_roc_overview(y, oof, slices, agg)
+            print(f"{name}: pooled-OOF sevoflurane (window) AUC = {sevo_auc:.4f} [{sevo_lo:.4f}, {sevo_hi:.4f}]")
+            
+            # Guarda para o plot comparativo
+            aucs_for_plot[name] = {"auc": case_auc, "lo": case_lo, "hi": case_hi}
 
-            for label, auc, lo, hi in roc_summary:
-                print(
-                    f"\n{name}: pooled-OOF {label.lower()} AUC = {auc:.4f} "
-                    f"[{lo:.4f}, {hi:.4f}]"
-                )
-
+        # --- GERAÇÃO DOS GRÁFICOS ---
+        with time_block("plot_svm_comparisons"):
             img_dir = os.path.join(_REPO_ROOT, "images")
             os.makedirs(img_dir, exist_ok=True)
-            fig_path = os.path.join(img_dir, "roc_performance.png")
-            plt.savefig(fig_path, dpi=300, bbox_inches="tight")
-            print(f"Saved ROC figure to {fig_path}")
+            colors = ['#7f7f7f', '#4c72b0', '#55a868', '#c44e52', '#8172b3']
+            
+            # PLOT 1: Curva ROC
+            fig_roc, ax_roc = plt.subplots(figsize=(7, 7))
+            for (name, color) in zip(models.keys(), colors):
+                agg = (
+                    df.assign(score=oof_scores[name])
+                    .groupby(["case", "state"], as_index=False)
+                    .agg(score=("score", "mean"), label=("label", "first"))
+                )
+                fpr, tpr, _ = roc_curve(agg["label"], agg["score"])
+                auc_val = aucs_for_plot[name]["auc"]
+                ax_roc.plot(fpr, tpr, color=color, lw=2.5, label=f"{name} (AUC: {auc_val:.3f})")
+            
+            ax_roc.plot([0, 1], [0, 1], color="black", lw=1.5, linestyle="--", label="Chance")
+            ax_roc.set_xlim(-0.01, 1.01)
+            ax_roc.set_ylim(-0.01, 1.01)
+            ax_roc.set_aspect("equal")
+            ax_roc.set_xlabel("Taxa de Falsos Positivos")
+            ax_roc.set_ylabel("Taxa de Verdadeiros Positivos")
+            ax_roc.set_title("Curvas ROC Comparativas (Nível do Paciente)")
+            ax_roc.legend(loc="lower right", frameon=True)
+            
+            roc_fig_path = os.path.join(img_dir, "svm_alphabet_comparison_roc.png")
+            fig_roc.savefig(roc_fig_path, dpi=300, bbox_inches="tight")
+            
+            # PLOT 2: Gráfico de Intervalos de Confiança (Forest Plot-style)
+            fig_ci, ax_ci = plt.subplots(figsize=(9, 6))
+            model_names = list(aucs_for_plot.keys())
+            
+            auc_vals = [aucs_for_plot[m]["auc"] for m in model_names]
+            err_lo = [aucs_for_plot[m]["auc"] - aucs_for_plot[m]["lo"] for m in model_names]
+            err_hi = [aucs_for_plot[m]["hi"] - aucs_for_plot[m]["auc"] for m in model_names]
+            
+            for i, name in enumerate(model_names):
+                ax_ci.errorbar(
+                    name, auc_vals[i], 
+                    yerr=[[err_lo[i]], [err_hi[i]]],
+                    fmt='o', color=colors[i], ecolor='black', 
+                    capsize=8, markersize=10, markeredgewidth=2.5, lw=2.5
+                )
+
+            ax_ci.set_ylabel("ROC-AUC do Paciente (95% CI Bootstrap)")
+            ax_ci.set_title("Comparação de Desempenho e IC por Tamanho do Alfabeto", fontsize=13)
+            ax_ci.grid(axis='y', linestyle='--', alpha=0.6)
+            
+            plt.setp(ax_ci.get_xticklabels(), rotation=15, ha="right")
+            
+            ci_fig_path = os.path.join(img_dir, "svm_alphabet_confidence_intervals.png")
+            fig_ci.savefig(ci_fig_path, dpi=300, bbox_inches="tight")
+            
+            print(f"\nSalvo gráfico comparativo ROC em {roc_fig_path}")
+            print(f"Salvo gráfico de Intervalos de Confiança em {ci_fig_path}")
 
     plt.show()
 
-
 if __name__ == "__main__":
     main()
+
+
