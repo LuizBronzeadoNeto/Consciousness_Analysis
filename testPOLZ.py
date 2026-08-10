@@ -16,8 +16,6 @@ def executar_teste():
     print(string_codificada)
     print(f"Tamanho da string gerada: {len(string_codificada)} caracteres")
     
-    # 3. Testar o Dicionário e a Normalização
-    # Vamos forçar uma string pequena que contém os pares comutativos (ex: JA e AJ, IB e BI)
     string_comutativa = "AJAJJAIBBI"
     string_normalizada = cc.normalize_trace(string_comutativa)
     print("\n2. TESTE DE NORMALIZAÇÃO (COMUTATIVIDADE):")
@@ -26,7 +24,6 @@ def executar_teste():
     if "JA" not in string_normalizada and "IB" not in string_normalizada:
          print("-> Sucesso: Os pares comutativos foram normalizados corretamente!")
     
-    # 4. Cálculo final da Complexidade
     num_frases = cc.polz_compress(string_codificada)
     complexidade_final = cc.lempel_ziv_complexity(sinal_simulado)
     

@@ -32,7 +32,7 @@ FEATURE_COLS = [
     "POLZ_4",
     "POLZ_8",
     "POLZ_16",
-    "POLZ_32", # <-- NOVA LINHA
+    "POLZ_32", 
     "log_ratio",
     "log_alpha_var",
     "log_theta",
@@ -709,13 +709,13 @@ def main():
                     with time_block("cv_fold", fold=fold_idx, model=name):
                         model.fit(X_train, y_train)
                         
-                        # 1. Pega os Scores (Probabilidade ou Distância da Fronteira) para AUC
+                       
                         if hasattr(model, "predict_proba"):
                             y_score = model.predict_proba(X_test)[:, 1]
                         elif hasattr(model, "decision_function"):
                             y_score = model.decision_function(X_test)
                         
-                        # 2. Pega a predição da classe (0 ou 1) para Acurácia
+                        
                         y_pred = model.predict(X_test)
                             
                         auc = roc_auc_score(y_test, y_score)
@@ -725,7 +725,7 @@ def main():
                         acc_scores[name].append(acc)
                         oof_scores[name][test_idx] = y_score
 
-        # --- IMPRESSÃO DOS RESULTADOS DETALHADOS ---
+       
         print("\n" + "="*70)
         print("MÉTRICAS DETALHADAS POR METODOLOGIA".center(70))
         print("="*70)
@@ -751,32 +751,26 @@ def main():
             )
             print(f"{name}: pooled-OOF case-level AUC = {case_auc:.4f} [{case_lo:.4f}, {case_hi:.4f}]")
             
-            # --- Overall (Window) AUC ---
             over_auc, over_lo, over_hi = _auc_with_ci(y, oof_scores[name], groups)
             print(f"{name}: pooled-OOF overall (window) AUC = {over_auc:.4f} [{over_lo:.4f}, {over_hi:.4f}]")
             
-            # --- Propofol (Window) AUC ---
             prop_auc, prop_lo, prop_hi = _auc_with_ci(
                 y[propofol_mask], oof_scores[name][propofol_mask], groups[propofol_mask]
             )
             print(f"{name}: pooled-OOF propofol (window) AUC = {prop_auc:.4f} [{prop_lo:.4f}, {prop_hi:.4f}]")
             
-            # --- Sevoflurane (Window) AUC ---
             sevo_auc, sevo_lo, sevo_hi = _auc_with_ci(
                 y[sevoflurane_mask], oof_scores[name][sevoflurane_mask], groups[sevoflurane_mask]
             )
             print(f"{name}: pooled-OOF sevoflurane (window) AUC = {sevo_auc:.4f} [{sevo_lo:.4f}, {sevo_hi:.4f}]")
             
-            # Guarda para o plot comparativo
             aucs_for_plot[name] = {"auc": case_auc, "lo": case_lo, "hi": case_hi}
 
-        # --- GERAÇÃO DOS GRÁFICOS ---
         with time_block("plot_svm_comparisons"):
             img_dir = os.path.join(_REPO_ROOT, "images")
             os.makedirs(img_dir, exist_ok=True)
             colors = ['#7f7f7f', '#4c72b0', '#55a868', '#c44e52', '#8172b3']
             
-            # PLOT 1: Curva ROC
             fig_roc, ax_roc = plt.subplots(figsize=(7, 7))
             for (name, color) in zip(models.keys(), colors):
                 agg = (
@@ -800,7 +794,6 @@ def main():
             roc_fig_path = os.path.join(img_dir, "svm_alphabet_comparison_roc.png")
             fig_roc.savefig(roc_fig_path, dpi=300, bbox_inches="tight")
             
-            # PLOT 2: Gráfico de Intervalos de Confiança (Forest Plot-style)
             fig_ci, ax_ci = plt.subplots(figsize=(9, 6))
             model_names = list(aucs_for_plot.keys())
             
